@@ -5,6 +5,8 @@ import * as https from 'https';
 import * as path from 'path';
 // VS Code extension API.
 import * as vscode from 'vscode';
+// Context harvester for Phase 1.
+import { harvestContext, type ProjectContext } from './context';
 
 type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -20,8 +22,8 @@ export function activate(context: vscode.ExtensionContext): void {
   // Output channel visible in View -> Output.
   const output = vscode.window.createOutputChannel('Forge');
 
-  // Register the Forge command.
-  const command = vscode.commands.registerCommand('forge.run', async () => {
+  // Register the Forge run command (Phase 0 editing).
+  const runCommand = vscode.commands.registerCommand('forge.run', async () => {
     output.clear();
     output.show(true);
 
@@ -164,8 +166,15 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
-  // Dispose command when the extension deactivates.
-  context.subscriptions.push(command);
+  // Register the Forge context command (Phase 1 harvesting).
+  const contextCommand = vscode.commands.registerCommand('forge.context', () => {
+    const contextObject = harvestContext();
+    logContext(output, contextObject);
+    void vscode.window.showInformationMessage('Forge context captured.');
+  });
+
+  // Dispose commands when the extension deactivates.
+  context.subscriptions.push(runCommand, contextCommand);
 }
 
 export function deactivate(): void {}
@@ -228,6 +237,12 @@ async function callChatCompletion(
     req.write(body);
     req.end();
   });
+}
+
+function logContext(output: vscode.OutputChannel, contextObject: ProjectContext): void {
+  output.clear();
+  output.appendLine(JSON.stringify(contextObject, null, 2));
+  output.show(true);
 }
 
 function extractUnifiedDiff(response: ChatCompletionResponse): string {

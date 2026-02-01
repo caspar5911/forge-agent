@@ -10,15 +10,16 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:forge.run"
-  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "forge.run",
         "title": "Forge: Run"
+      },
+      {
+        "command": "forge.context",
+        "title": "Forge: Context"
       }
     ],
     "configuration": {

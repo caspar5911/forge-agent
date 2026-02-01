@@ -133,6 +133,10 @@ npm run compile
 - In the new window, open a file you want to edit.
 - Run the command: Forge: Run
 
+### Commands
+- Forge: Run (LLM diff edit on the active file)
+- Forge: Context (print ProjectContext to Output panel)
+
 ### 7) Test a change
 - Enter a short instruction when prompted.
 - Review the proposed diff.
