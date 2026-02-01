@@ -1,22 +1,38 @@
+// Node utilities for reading files and joining paths.
 import * as fs from 'fs';
 import * as path from 'path';
+// VS Code extension API.
 import * as vscode from 'vscode';
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Output channel visible in View -> Output.
   const output = vscode.window.createOutputChannel('Forge');
+  // Register the single Forge command.
   const command = vscode.commands.registerCommand('forge.run', () => {
+    // Workspace root folder (or null if none).
     const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    // Currently active editor file (or null if none).
     const activeEditorFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
+    // Collected file list (relative to root).
     const files: string[] = [];
+    // Resolved package.json path (if found).
     let packageJsonPath: string | null = null;
+    // Parsed package.json content.
     let packageJson: unknown = null;
+    // Detected package manager name.
     let packageManager: string | null = null;
+    // Detected frontend framework name.
     let frontendFramework: string | null = null;
+    // Detected backend framework name.
     let backendFramework: string | null = null;
 
+    // Only scan if we have a workspace root.
     if (rootPath) {
+      // Track any package.json files found during the scan.
       const packageJsonCandidates: string[] = [];
+      // Limit how deep we scan.
       const maxDepth = 2;
+      // Manual stack for depth-limited traversal.
       const stack: Array<{ dir: string; depth: number }> = [{ dir: rootPath, depth: 0 }];
       while (stack.length > 0) {
         const current = stack.pop();
@@ -30,6 +46,7 @@ export function activate(context: vscode.ExtensionContext): void {
           continue;
         }
         for (const entry of entries) {
+          // Skip large or irrelevant folders.
           if (entry.name === 'node_modules' || entry.name === '.git') {
             continue;
           }
@@ -39,7 +56,9 @@ export function activate(context: vscode.ExtensionContext): void {
               stack.push({ dir: fullPath, depth: current.depth + 1 });
             }
           } else {
+            // Store relative file path.
             files.push(path.relative(rootPath, fullPath));
+            // Track package.json files for later selection.
             if (entry.name === 'package.json') {
               packageJsonCandidates.push(fullPath);
             }
@@ -47,6 +66,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
 
+      // Prefer a package.json near the active editor file.
       if (activeEditorFile) {
         const activeRelative = path.relative(rootPath, activeEditorFile);
         const activeInWorkspace = !activeRelative.startsWith('..') && !path.isAbsolute(activeRelative);
@@ -70,6 +90,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
 
+      // Fallback to a root package.json if present.
       if (!packageJsonPath) {
         const rootPackageJsonPath = path.join(rootPath, 'package.json');
         if (fs.existsSync(rootPackageJsonPath)) {
@@ -77,10 +98,12 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
 
+      // If exactly one package.json was found, use it.
       if (!packageJsonPath && packageJsonCandidates.length === 1) {
         packageJsonPath = packageJsonCandidates[0];
       }
 
+      // Safely parse package.json content.
       if (packageJsonPath) {
         try {
           const raw = fs.readFileSync(packageJsonPath, 'utf8');
@@ -90,6 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       }
 
+      // Detect package manager and frameworks from dependencies.
       if (packageJson && typeof packageJson === 'object') {
         const pkg = packageJson as {
           dependencies?: Record<string, string>;
@@ -98,9 +122,11 @@ export function activate(context: vscode.ExtensionContext): void {
         };
         const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
 
+        // Use packageManager field if present.
         if (typeof pkg.packageManager === 'string') {
           packageManager = pkg.packageManager.split('@')[0] ?? null;
         }
+        // Otherwise, infer from lockfiles near package.json.
         if (!packageManager) {
           const projectDir = packageJsonPath ? path.dirname(packageJsonPath) : rootPath;
           if (fs.existsSync(path.join(projectDir, 'pnpm-lock.yaml'))) {
@@ -114,6 +140,7 @@ export function activate(context: vscode.ExtensionContext): void {
           }
         }
 
+        // Basic frontend framework detection.
         if ('next' in deps) {
           frontendFramework = 'next';
         } else if ('react' in deps) {
@@ -132,6 +159,7 @@ export function activate(context: vscode.ExtensionContext): void {
           frontendFramework = 'astro';
         }
 
+        // Basic backend framework detection.
         if ('@nestjs/core' in deps) {
           backendFramework = 'nestjs';
         } else if ('express' in deps) {
@@ -148,6 +176,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
 
+    // Structured context object for logging.
     const contextObject = {
       workspaceRoot: rootPath,
       activeEditorFile,
@@ -158,13 +187,16 @@ export function activate(context: vscode.ExtensionContext): void {
       backendFramework
     };
 
+    // Write context to the Output panel.
     output.clear();
     output.appendLine(JSON.stringify(contextObject, null, 2));
     output.show(true);
 
+    // Show a short confirmation toast.
     void vscode.window.showInformationMessage('Forge context captured');
   });
 
+  // Dispose command when the extension deactivates.
   context.subscriptions.push(command);
 }
 
