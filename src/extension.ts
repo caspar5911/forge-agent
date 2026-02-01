@@ -5,6 +5,8 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 // Context harvester for Phase 1.
 import { harvestContext, type ProjectContext } from './context';
+import { buildValidationOptions, runCommand } from './validation';
+import { commitAll, getCurrentBranch, getDiffStat, getGitStatus, getRemotes, isGitRepo, push } from './git';
 import type { ChatCompletionResponse, ChatMessage } from './llm/client';
 import { callChatCompletion } from './llm/client';
 
@@ -70,56 +72,23 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    output.appendLine('Requesting diff from the local LLM...');
+    output.appendLine('Requesting updated file from the local LLM...');
 
-    // Build the LLM prompt for a unified diff.
-    const messages: ChatMessage[] = [
-      {
-        role: 'system',
-        content:
-          'You are a coding assistant. Return ONLY a unified diff for the target file. ' +
-          'Do not include explanations, code fences, or extra text. ' +
-          'The diff must apply cleanly and only change the target file.'
-      },
-      {
-        role: 'user',
-        content:
-          `Instruction: ${instruction}\n` +
-          `Target file: ${relativePath}\n` +
-          'Current file content:\n' +
-          '---\n' +
-          `${originalContent}\n` +
-          '---\n' +
-          'Return a unified diff for the target file only.'
-      }
-    ];
+    // Build the LLM prompt for full-file output.
+    const messages = buildFullFileMessages(instruction, relativePath, originalContent);
 
-    let diffText: string;
+    let updatedContent: string;
     try {
       const response = await callChatCompletion({}, messages);
-      diffText = extractUnifiedDiff(response);
+      updatedContent = extractUpdatedFile(response);
     } catch (error) {
       output.appendLine(`LLM error: ${String(error)}`);
       void vscode.window.showErrorMessage('Forge: LLM request failed.');
       return;
     }
 
-    output.appendLine('Validating diff...');
-
-    try {
-      validateSingleFileDiff(diffText, relativePath);
-    } catch (error) {
-      output.appendLine(`Diff validation failed: ${String(error)}`);
-      void vscode.window.showErrorMessage('Forge: Diff validation failed.');
-      return;
-    }
-
-    let updatedContent: string;
-    try {
-      updatedContent = applyUnifiedDiff(originalContent, diffText);
-    } catch (error) {
-      output.appendLine(`Diff apply failed: ${String(error)}`);
-      void vscode.window.showErrorMessage('Forge: Failed to apply the diff.');
+    if (updatedContent === originalContent) {
+      void vscode.window.showInformationMessage('Forge: No changes produced.');
       return;
     }
 
@@ -155,6 +124,17 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (error) {
       output.appendLine(`Write error: ${String(error)}`);
       void vscode.window.showErrorMessage('Forge: Failed to write the file.');
+      return;
+    }
+
+    if (rootPath) {
+      const validationOk = await maybeRunValidation(rootPath, output);
+      if (!validationOk) {
+        void vscode.window.showErrorMessage('Forge: Validation failed.');
+        return;
+      }
+
+      await maybeRunGitWorkflow(rootPath, output);
     }
   });
 
@@ -194,131 +174,180 @@ function applyLLMSettingsToEnv(): void {
   }
 }
 
-function extractUnifiedDiff(response: ChatCompletionResponse): string {
+async function maybeRunValidation(rootPath: string, output: vscode.OutputChannel): Promise<boolean> {
+  const contextObject = harvestContext();
+  const options = buildValidationOptions(contextObject.packageJson, contextObject.packageManager);
+  const items = options.map((option) => ({
+    label: option.label,
+    description: option.command
+  }));
+
+  items.push({ label: 'Skip validation', description: '' });
+
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Select a validation command to run'
+  });
+
+  if (!pick || pick.label === 'Skip validation') {
+    return true;
+  }
+
+  const selected = options.find((option) => option.label === pick.label);
+  if (!selected) {
+    return true;
+  }
+
+  output.appendLine('Running validation...');
+  try {
+    const code = await runCommand(selected.command, rootPath, output);
+    return code === 0;
+  } catch (error) {
+    output.appendLine(`Validation error: ${String(error)}`);
+    return false;
+  }
+}
+
+async function maybeRunGitWorkflow(rootPath: string, output: vscode.OutputChannel): Promise<void> {
+  const proceed = await vscode.window.showWarningMessage(
+    'Start Git workflow (status, commit, optional push)?',
+    'Continue',
+    'Skip'
+  );
+
+  if (proceed !== 'Continue') {
+    return;
+  }
+
+  if (!(await isGitRepo(rootPath))) {
+    void vscode.window.showInformationMessage('Forge: Not a Git repository.');
+    return;
+  }
+
+  const statusLines = await getGitStatus(rootPath);
+  if (statusLines.length === 0) {
+    void vscode.window.showInformationMessage('Forge: No changes to commit.');
+    return;
+  }
+
+  output.appendLine('Git status:');
+  statusLines.forEach((line) => output.appendLine(line));
+
+  const diffStat = await getDiffStat(rootPath);
+  if (diffStat.trim().length > 0) {
+    output.appendLine('Diff summary:');
+    output.appendLine(diffStat.trim());
+  }
+
+  const message = await vscode.window.showInputBox({
+    prompt: 'Commit message',
+    placeHolder: 'feat: describe your change'
+  });
+
+  if (!message) {
+    void vscode.window.showInformationMessage('Forge: Commit cancelled.');
+    return;
+  }
+
+  const confirmCommit = await vscode.window.showWarningMessage(
+    `Commit with message: "${message}"?`,
+    'Commit',
+    'Cancel'
+  );
+
+  if (confirmCommit !== 'Commit') {
+    void vscode.window.showInformationMessage('Forge: Commit cancelled.');
+    return;
+  }
+
+  try {
+    await commitAll(rootPath, message, output);
+    void vscode.window.showInformationMessage('Forge: Commit created.');
+  } catch (error) {
+    output.appendLine(`Git commit error: ${String(error)}`);
+    void vscode.window.showErrorMessage('Forge: Commit failed.');
+    return;
+  }
+
+  const remotes = await getRemotes(rootPath);
+  if (remotes.length === 0) {
+    return;
+  }
+
+  const branch = await getCurrentBranch(rootPath);
+  const remote = remotes.includes('origin') ? 'origin' : remotes[0];
+
+  const confirmPush = await vscode.window.showWarningMessage(
+    `Push to ${remote}/${branch}?`,
+    'Push',
+    'Skip'
+  );
+
+  if (confirmPush !== 'Push') {
+    return;
+  }
+
+  try {
+    await push(rootPath, remote, branch, output);
+    void vscode.window.showInformationMessage('Forge: Push completed.');
+  } catch (error) {
+    output.appendLine(`Git push error: ${String(error)}`);
+    void vscode.window.showErrorMessage('Forge: Push failed.');
+  }
+}
+
+function extractUpdatedFile(response: ChatCompletionResponse): string {
   const content = response.choices?.[0]?.message?.content?.trim();
   if (!content) {
     const errorMessage = response.error?.message ?? 'No content returned by LLM.';
     throw new Error(errorMessage);
   }
 
-  const fenced = content.match(/```(?:diff)?\s*([\s\S]*?)```/i);
+  const fenced = content.match(/```(?:\w+)?\s*([\s\S]*?)```/i);
   const raw = fenced ? fenced[1].trim() : content;
 
-  if (!raw.includes('--- ') || !raw.includes('+++ ')) {
-    throw new Error('LLM output does not contain a unified diff.');
+  if (isLikelyDiff(raw)) {
+    throw new Error('LLM output appears to be a diff, not full file content.');
   }
 
   return raw;
 }
 
-function normalizeDiffPath(diffPath: string): string {
-  const cleaned = diffPath.replace(/^a\//, '').replace(/^b\//, '').replace(/^"|"$/g, '');
-  return cleaned.replace(/\\/g, '/');
+function isLikelyDiff(text: string): boolean {
+  return text.includes('--- ') && text.includes('+++ ') && text.includes('@@');
 }
 
-function matchesTarget(diffPath: string, target: string): boolean {
-  const normalizedDiff = normalizeDiffPath(diffPath);
-  const normalizedTarget = target.replace(/\\/g, '/');
-  return normalizedDiff === normalizedTarget || normalizedDiff.endsWith(`/${normalizedTarget}`);
-}
+function buildFullFileMessages(
+  instruction: string,
+  relativePath: string,
+  originalContent: string
+): ChatMessage[] {
+  const commentStyle = shouldAllowComments(instruction)
+    ? 'If you add comments, they must be on their own line above the code. Do not add inline trailing comments.'
+    : 'Do not add comments unless explicitly requested.';
 
-function validateSingleFileDiff(diffText: string, targetPath: string): void {
-  const lines = diffText.split(/\r?\n/);
-  const fileHeaders = lines.filter((line) => line.startsWith('--- '));
-  if (fileHeaders.length !== 1) {
-    throw new Error('Diff must contain exactly one file header.');
-  }
-
-  const oldLineIndex = lines.findIndex((line) => line.startsWith('--- '));
-  const newLineIndex = lines.findIndex((line) => line.startsWith('+++ '));
-
-  if (oldLineIndex === -1 || newLineIndex === -1 || newLineIndex <= oldLineIndex) {
-    throw new Error('Diff headers are missing or out of order.');
-  }
-
-  const oldPath = lines[oldLineIndex].slice(4).trim();
-  const newPath = lines[newLineIndex].slice(4).trim();
-
-  if (oldPath === '/dev/null' || newPath === '/dev/null') {
-    throw new Error('Diff must modify an existing file (no create/delete).');
-  }
-
-  if (!matchesTarget(oldPath, targetPath) || !matchesTarget(newPath, targetPath)) {
-    throw new Error('Diff file path does not match the active file.');
-  }
-
-  const hasHunk = lines.some((line) => line.startsWith('@@ '));
-  if (!hasHunk) {
-    throw new Error('Diff contains no hunks.');
-  }
-
-  const extraHeaders = lines.filter((line, index) => index > newLineIndex && line.startsWith('--- '));
-  if (extraHeaders.length > 0) {
-    throw new Error('Diff contains multiple files.');
-  }
-}
-
-function applyUnifiedDiff(originalText: string, diffText: string): string {
-  const originalLines = originalText.replace(/\r\n/g, '\n').split('\n');
-  const diffLines = diffText.replace(/\r\n/g, '\n').split('\n');
-
-  const result: string[] = [];
-  let originalIndex = 0;
-
-  let i = 0;
-  while (i < diffLines.length) {
-    const line = diffLines[i];
-    if (line.startsWith('@@ ')) {
-      const match = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/.exec(line);
-      if (!match) {
-        throw new Error(`Invalid hunk header: ${line}`);
-      }
-
-      const startOld = Number(match[1]);
-      const oldStartIndex = Math.max(startOld - 1, 0);
-
-      // Copy unchanged lines before the hunk.
-      while (originalIndex < oldStartIndex && originalIndex < originalLines.length) {
-        result.push(originalLines[originalIndex]);
-        originalIndex += 1;
-      }
-
-      i += 1;
-      // Apply hunk lines.
-      while (i < diffLines.length && !diffLines[i].startsWith('@@ ')) {
-        const hunkLine = diffLines[i];
-        if (hunkLine.startsWith(' ')) {
-          const content = hunkLine.slice(1);
-          if (originalLines[originalIndex] !== content) {
-            throw new Error('Context line mismatch while applying diff.');
-          }
-          result.push(content);
-          originalIndex += 1;
-        } else if (hunkLine.startsWith('-')) {
-          const content = hunkLine.slice(1);
-          if (originalLines[originalIndex] !== content) {
-            throw new Error('Removal line mismatch while applying diff.');
-          }
-          originalIndex += 1;
-        } else if (hunkLine.startsWith('+')) {
-          result.push(hunkLine.slice(1));
-        } else if (hunkLine.startsWith('\\')) {
-          // Ignore "No newline at end of file" markers.
-        } else {
-          throw new Error(`Unexpected diff line: ${hunkLine}`);
-        }
-        i += 1;
-      }
-      continue;
+  return [
+    {
+      role: 'system',
+      content:
+        'You are a coding assistant. Return ONLY the full updated content of the target file. ' +
+        'Do not include explanations, code fences, or extra text. ' +
+        'Preserve unrelated lines and formatting unless changes are required by the instruction. ' +
+        commentStyle
+    },
+    {
+      role: 'user',
+      content:
+        `Instruction: ${instruction}\n` +
+        `Target file: ${relativePath}\n` +
+        'Current file content:\n' +
+        '---\n' +
+        `${originalContent}\n` +
+        '---\n' +
+        'Return the full updated file content only.'
     }
-    i += 1;
-  }
+  ];
+}
 
-  // Append remaining original lines after the last hunk.
-  while (originalIndex < originalLines.length) {
-    result.push(originalLines[originalIndex]);
-    originalIndex += 1;
-  }
-
-  return result.join('\n');
+function shouldAllowComments(instruction: string): boolean {
+  return /\b(comment|comments|document|documentation|explain|explanation)\b/i.test(instruction);
 }

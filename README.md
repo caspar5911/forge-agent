@@ -16,8 +16,8 @@ Phase 0 - Foundation + LLM Connectivity + Safe Diff Editing
 - VS Code extension shell
 - forge.run command
 - Local LLM connection (vLLM OpenAI-compatible API)
-- Single-file unified diff generation
-- Diff validation + user approval + apply
+- Single-file full-file generation (LLM returns updated file)
+- Local diff view + user approval + apply
 
 Phase 1 - Context Harvester
 - Detect workspace root
@@ -60,7 +60,7 @@ Phase 5 - UX and Polish
 - Phase 1: complete
 - Phase 2: complete (LLM-backed + fallback)
 - Phase 3: complete (LLM-backed + fallback)
-- Phase 4: pending
+- Phase 4: complete
 - Phase 5: pending
 
 ## Local Setup (From Scratch)
@@ -156,13 +156,15 @@ npm run compile
 - src/compressor/
 - src/planner/
 - src/llm/
+- src/validation/
+- src/git/
 - phase0-setup.txt (full vLLM setup and troubleshooting)
 
 ## Safety Rules
-- Single-file diffs only
-- Unified diff format only
+- Single-file edits only
 - Explicit user approval before writing changes
 - No hidden Git actions
+- Comments are only added when explicitly requested (and placed above code lines)
 
 ## LLM Usage Policy
 - Context Harvester: NO
@@ -172,3 +174,11 @@ npm run compile
 - Validation: NO
 - Git Execution: NO
 - Commit Messages: YES
+
+## Possible Enhancements (Later)
+- Make default validation command configurable in settings
+- Add dedicated commands: Forge: Validate, Forge: Git Status, Forge: Commit
+- Add richer diff summaries (files changed, line counts)
+- Add streaming LLM responses for long edits
+- Add per-project profiles (model, endpoint, policies)
+- Add safe multi-file edits (Phase 5+)
