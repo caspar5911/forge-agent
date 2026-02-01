@@ -1,3 +1,7 @@
+// Node utilities for HTTP requests.
+import * as http from 'http';
+import * as https from 'https';
+
 // Minimal shape for any project context data.
 export type ProjectContext = Record<string, unknown>;
 
@@ -6,14 +10,32 @@ export type TaskPlan =
   | { kind: 'clarification'; questions: string[] }
   | { kind: 'plan'; steps: string[] };
 
-// Convert a short instruction into either questions or an ordered plan.
-export function compressTask(instruction: string, context: ProjectContext): TaskPlan {
-  // Context is intentionally unused at this phase.
-  void context;
+// LLM configuration settings for the compressor.
+export type LLMConfig = {
+  endpoint?: string;
+  model?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+};
 
-  // Normalize the input.
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+type ChatCompletionResponse = {
+  choices?: Array<{ message?: { content?: string } }>;
+  error?: { message?: string };
+};
+
+const DEFAULT_LLM_ENDPOINT = 'http://127.0.0.1:8000/v1';
+const DEFAULT_LLM_MODEL = 'Qwen/Qwen2.5-Coder-32B-Instruct-AWQ';
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+// Convert a short instruction into either questions or an ordered plan using the local LLM.
+export async function compressTask(
+  instruction: string,
+  context: ProjectContext,
+  config: LLMConfig = {}
+): Promise<TaskPlan> {
   const trimmed = instruction.trim();
-  // Empty input means we must ask for clarification.
   if (!trimmed) {
     return {
       kind: 'clarification',
@@ -25,17 +47,43 @@ export function compressTask(instruction: string, context: ProjectContext): Task
     };
   }
 
-  // Tokenize basic words/paths for simple ambiguity checks.
+  const endpoint = config.endpoint ?? process.env.FORGE_LLM_ENDPOINT ?? DEFAULT_LLM_ENDPOINT;
+  const model = config.model ?? process.env.FORGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
+  const apiKey = config.apiKey ?? process.env.FORGE_LLM_API_KEY;
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  const messages = buildMessages(trimmed, context);
+
+  try {
+    const response = await callChatCompletion(endpoint, model, messages, apiKey, timeoutMs);
+    const plan = parseTaskPlan(response);
+    return plan;
+  } catch {
+    // If the LLM fails, fall back to a deterministic local plan.
+    return compressTaskLocal(trimmed);
+  }
+}
+
+// Deterministic fallback when the LLM fails or returns invalid output.
+export function compressTaskLocal(instruction: string): TaskPlan {
+  const trimmed = instruction.trim();
+  if (!trimmed) {
+    return {
+      kind: 'clarification',
+      questions: [
+        'What should be changed or created?',
+        'Which part of the project does this apply to?',
+        'What is the expected outcome?'
+      ]
+    };
+  }
+
   const tokens = trimmed.toLowerCase().match(/[a-z0-9._/\\-]+/g) ?? [];
   const wordCount = tokens.length;
-  // Quoted text hints the user provided a specific target.
   const hasQuoted = /["'`].+["'`]/.test(trimmed);
-  // Path-like tokens hint at a concrete location.
   const hasPathLike = tokens.some((token) => token.includes('/') || token.includes('\\') || token.includes('.'));
-  // Vague pronouns often mean the request lacks a clear target.
   const hasVaguePronoun = /\b(it|this|that|these|those|them|something|stuff|anything|whatever)\b/i.test(trimmed);
 
-  // If the request is too short or too vague, ask for clarification.
   if (wordCount < 2 || (hasVaguePronoun && !hasQuoted && !hasPathLike)) {
     return {
       kind: 'clarification',
@@ -47,7 +95,6 @@ export function compressTask(instruction: string, context: ProjectContext): Task
     };
   }
 
-  // Split the instruction into step-like segments.
   const segments = trimmed
     .replace(/\s+/g, ' ')
     .replace(/[.]+$/g, '')
@@ -56,22 +103,140 @@ export function compressTask(instruction: string, context: ProjectContext): Task
     .filter((segment) => segment.length > 0);
 
   const steps: string[] = [];
-  // Always start by reviewing context.
   steps.push('Review the provided ProjectContext to understand the current state.');
 
-  // If there is only one segment, keep it as a single task.
   if (segments.length <= 1) {
     steps.push(`Carry out the request: ${trimmed}.`);
   } else {
-    // Otherwise, turn each segment into its own step.
     for (const segment of segments) {
       const sentence = segment.endsWith('.') ? segment : `${segment}.`;
       steps.push(sentence.charAt(0).toUpperCase() + sentence.slice(1));
     }
   }
 
-  // Close with a verification step.
   steps.push('Verify the result matches the instruction.');
 
   return { kind: 'plan', steps };
+}
+
+function buildMessages(instruction: string, context: ProjectContext): ChatMessage[] {
+  const contextJson = JSON.stringify(context, null, 2);
+
+  return [
+    {
+      role: 'system',
+      content:
+        'You are a task compressor. Return ONLY valid JSON with one of these shapes: ' +
+        '{"kind":"clarification","questions":["..."]} or {"kind":"plan","steps":["..."]}. ' +
+        'Do not include code fences, comments, or extra text. Ask for clarification if the instruction is ambiguous.'
+    },
+    {
+      role: 'user',
+      content: `Instruction:\n${instruction}\n\nProjectContext:\n${contextJson}`
+    }
+  ];
+}
+
+async function callChatCompletion(
+  endpoint: string,
+  model: string,
+  messages: ChatMessage[],
+  apiKey: string | undefined,
+  timeoutMs: number
+): Promise<ChatCompletionResponse> {
+  const url = new URL(endpoint.replace(/\/$/, '') + '/chat/completions');
+  const body = JSON.stringify({ model, messages, temperature: 0, stream: false });
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body).toString()
+  };
+
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  const isHttps = url.protocol === 'https:';
+  const requestOptions: http.RequestOptions = {
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port,
+    path: url.pathname,
+    headers
+  };
+
+  const requester = isHttps ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = requester.request(requestOptions, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(data) as ChatCompletionResponse);
+        } catch (error) {
+          reject(new Error(`Invalid JSON response: ${String(error)}`));
+        }
+      });
+    });
+
+    req.on('error', (error) => reject(error));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('LLM request timed out.'));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+function parseTaskPlan(response: ChatCompletionResponse): TaskPlan {
+  const content = response.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    const errorMessage = response.error?.message ?? 'No content returned by LLM.';
+    throw new Error(errorMessage);
+  }
+
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1].trim() : content;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid JSON from LLM: ${String(error)}`);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('LLM output is not a JSON object.');
+  }
+
+  const plan = parsed as { kind?: unknown; steps?: unknown; questions?: unknown };
+  if (plan.kind === 'clarification') {
+    if (!Array.isArray(plan.questions) || plan.questions.length === 0) {
+      throw new Error('Clarification must include a non-empty questions array.');
+    }
+    if (!plan.questions.every((q) => typeof q === 'string' && q.trim().length > 0)) {
+      throw new Error('Clarification questions must be non-empty strings.');
+    }
+    return { kind: 'clarification', questions: plan.questions };
+  }
+
+  if (plan.kind === 'plan') {
+    if (!Array.isArray(plan.steps) || plan.steps.length === 0) {
+      throw new Error('Plan must include a non-empty steps array.');
+    }
+    if (!plan.steps.every((s) => typeof s === 'string' && s.trim().length > 0)) {
+      throw new Error('Plan steps must be non-empty strings.');
+    }
+    return { kind: 'plan', steps: plan.steps };
+  }
+
+  throw new Error('LLM output has an invalid kind.');
 }

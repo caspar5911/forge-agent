@@ -22,6 +22,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // Output channel visible in View -> Output.
   const output = vscode.window.createOutputChannel('Forge');
 
+  // Sync VS Code settings into env vars for shared LLM configuration.
+  applyLLMSettingsToEnv();
+  const configWatcher = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('forge')) {
+      applyLLMSettingsToEnv();
+    }
+  });
+
   // Register the Forge run command (Phase 0 editing).
   const runCommand = vscode.commands.registerCommand('forge.run', async () => {
     output.clear();
@@ -174,7 +182,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // Dispose commands when the extension deactivates.
-  context.subscriptions.push(runCommand, contextCommand);
+  context.subscriptions.push(runCommand, contextCommand, configWatcher);
 }
 
 export function deactivate(): void {}
@@ -243,6 +251,23 @@ function logContext(output: vscode.OutputChannel, contextObject: ProjectContext)
   output.clear();
   output.appendLine(JSON.stringify(contextObject, null, 2));
   output.show(true);
+}
+
+function applyLLMSettingsToEnv(): void {
+  const config = vscode.workspace.getConfiguration('forge');
+  const endpoint = config.get<string>('llmEndpoint');
+  const model = config.get<string>('llmModel');
+  const apiKey = config.get<string>('llmApiKey');
+
+  if (endpoint && endpoint.trim().length > 0) {
+    process.env.FORGE_LLM_ENDPOINT = endpoint.trim();
+  }
+  if (model && model.trim().length > 0) {
+    process.env.FORGE_LLM_MODEL = model.trim();
+  }
+  if (apiKey && apiKey.trim().length > 0) {
+    process.env.FORGE_LLM_API_KEY = apiKey.trim();
+  }
 }
 
 function extractUnifiedDiff(response: ChatCompletionResponse): string {

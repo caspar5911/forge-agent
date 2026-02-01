@@ -26,12 +26,12 @@ Phase 1 - Context Harvester
 - Detect package manager and basic frameworks
 - Detect active editor file
 - Output structured context object
-- Log context to Output panel
+- Log context to Output panel (Forge: Context)
 
 Phase 2 - Task Compressor
-- Turn short instructions into explicit steps
+- Turn short instructions into explicit steps (LLM-backed)
 - Ask clarifying questions when ambiguous
-- Output structured task plan
+- Output structured task plan (strict JSON schema)
 
 Phase 3 - Planner Hardening
 - Read plan + context
@@ -54,6 +54,14 @@ Phase 5 - UX and Polish
 - M3: Multi-file changes validated by build/tests (Phase 4)
 - M4: Git commit generation with approval (Phase 4)
 - M5: End-to-end Copilot-like workflow on a real project
+
+## Current Status
+- Phase 0: complete
+- Phase 1: complete
+- Phase 2: complete (LLM-backed + fallback)
+- Phase 3: complete (deterministic planner)
+- Phase 4: pending
+- Phase 5: pending
 
 ## Local Setup (From Scratch)
 
@@ -144,6 +152,7 @@ npm run compile
 
 ## Project Structure
 - src/extension.ts
+- src/context/
 - src/compressor/
 - src/planner/
 - phase0-setup.txt (full vLLM setup and troubleshooting)
