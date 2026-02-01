@@ -1,121 +1,150 @@
 # Forge
 
-Forge is an on-prem, agentic AI coding system that turns short natural-language instructions into safe, validated code changes inside real repositories. It runs locally, keeps a clear audit trail, and favors explicit control.
+Forge is an on-prem, agentic coding assistant built as a VS Code extension. It turns short instructions into safe, validated code changes using a local LLM and keeps control explicit and auditable.
+
+## Status
+- Phase 0-5: complete (UI + workflows)
+- Phase 6: planned (Git Manager hardening)
 
 ## What Forge Does
-- Reads real project state
-- Lets the LLM plan and edit (single or multi-file)
-- Applies full-file updates safely
-- Shows action + purpose summaries before edits
-- Shows inline diff previews in the chat
-- Auto-selects files from the prompt and confirms in a picker (multi-file)
-- Runs validation automatically and can auto-fix failures
-- Integrates with Git only with explicit approval
-- Answers project questions from context
-- Provides UI shortcuts and step indicators for status
-- Streams assistant responses in the UI
+- VS Code UI panel + sidebar view
+- Single-file or multi-file edits
+- File picker for multi-file confirmation
+- Inline diff preview in chat
+- Action + purpose summaries before edits
+- Automatic validation and auto-fix retries
+- Q&A about project context
+- Optional Git workflow (explicit approval only)
+- Local vLLM (OpenAI-compatible) integration
 
-## Roadmap (Phased Delivery)
+## Capabilities and Limits
+Capabilities:
+- Edit files via LLM-generated full-file updates
+- Select targets automatically or via file picker
+- Validate changes and attempt auto-fixes
+- Answer project questions using harvested context
 
-Phase 0 - Foundation + LLM Connectivity + Safe Editing
-- VS Code extension shell
-- forge.run command
-- Local LLM connection (vLLM OpenAI-compatible API)
-- Single-file full-file generation (LLM returns updated file)
-- Local approval + apply
+Limits:
+- No hidden Git actions
+- No background code execution
+- No file edits without explicit approval (unless skipConfirmations is enabled)
+- File edits require JSON payloads (no partial patch streaming)
+- Depth-limited workspace scan for large repos
+
+## Technical Specifications
+- Architecture: VS Code extension + webview UI + local LLM server
+- LLM API: OpenAI-compatible `/v1/chat/completions`
+- Data flow: prompt → file selection → update generation → apply → validation
+- OS: Windows + WSL2 (recommended)
+- GPU: NVIDIA with WSL2 GPU support (32 GB VRAM recommended for 32B models)
+- Config: VS Code settings + environment variables
+- Security: local-only, no telemetry, no external network calls unless configured
+
+## Example Prompts
+- "Add comments to App.tsx"
+- "Remove unused imports in Timesheet.tsx"
+- "Fix validation errors for this project"
+- "How many files are in this repo?"
+- "Show me the content of src/main.tsx"
+
+## Performance Notes
+- First run includes model warmup (can take minutes)
+- Subsequent requests are faster if the model stays loaded
+- Large multi-file updates can be slower due to JSON output size
+
+## Model Compatibility
+Tested:
+- Qwen/Qwen2.5-Coder-32B-Instruct-AWQ (vLLM)
+
+Expected:
+- OpenAI-compatible chat API
+- JSON-safe outputs for update payloads
+
+## Security and Privacy
+- Runs fully on-prem
+- No telemetry by default
+- API keys stored in VS Code settings or environment variables
+
+## Known Issues / Limitations
+- JSON payloads can fail if the model emits invalid JSON
+- Very large diffs may slow down LLM responses
+- File selection relies on file list + symbol index (no semantic search yet)
+
+## FAQ
+**Why does Forge ask me to confirm files?**  
+To avoid unintended edits and keep changes explicit.
+
+**Why does validation run automatically?**  
+To ensure changes compile/test successfully. You can disable autoValidation.
+
+**Why are multi-file edits slower?**  
+The LLM must generate full file contents and JSON for each file.
+
+## Release Notes
+v0.1
+- Phase 0-5 complete
+- UI panel + sidebar
+- Multi-file edits + file picker
+- Validation + auto-fix
+
+## Roadmap (Phases)
+Phase 0 - Foundation
+- Extension shell + command wiring
+- Local LLM connectivity
+- Safe single-file apply
 
 Phase 1 - Context Harvester
-- Detect workspace root
-- List files (depth-limited)
-- Read package.json
-- Detect package manager and basic frameworks
-- Detect active editor file
-- Output structured context object
-- Log context to Output panel (Forge: Context)
+- Workspace root detection
+- Depth-limited file list
+- package.json parsing
+- Framework + package manager detection
+- Active file detection
 
 Phase 2 - Task Compressor
-- Turn short instructions into explicit steps (LLM-backed)
+- Turn vague prompts into explicit steps
 - Ask clarifying questions when ambiguous
-- Output structured task plan (strict JSON schema)
 
-Phase 3 - Planner Hardening
-- Read plan + context
-- Emit one tool call at a time (LLM-backed)
-- Strict tool contracts (read file / request diff / run validation)
+Phase 3 - Planner
+- Choose the next safe action
+- Emit strict tool calls (read, diff, validate)
 
-Phase 4 - Validation and Git Integration
-- Validation gate (build/test/typecheck)
-- Git commit workflow with explicit approval
+Phase 4 - Validation + Git Integration
+- Run build/test/typecheck
+- Optional auto-fix loop
+- Git commit flow with user approval
+- Workspace symbol index for file targeting
+
+Phase 5 - UX + Polish
+- UI panel and sidebar
+- File picker modal
+- Status steps + shortcuts
+- Cleaner logs
+
+Phase 6 - Git Manager (planned)
+- Harden commit flow and approvals
+- Better diff summaries
 - Optional push with explicit consent
-- Workspace symbol index (LSP) to improve file selection for multi-file edits
 
-Phase 5 - UX and Polish
-- Progress indicators
-- Clear logs and confirmations
-- Documentation and usability improvements
-- Forge UI panel and sidebar view for prompts
-- File selection modal for multi-file edits
+## Local Setup
 
-## Milestones
-- M1: Single-file safe edit via agent command (Phase 0)
-- M2: Short prompts expand reliably (Phases 1-2)
-- M3: Multi-file changes validated by build/tests (Phase 4)
-- M4: Git commit generation with approval (Phase 4)
-- M5: End-to-end Copilot-like workflow on a real project
-
-## Current Status
-- Phase 0: complete
-- Phase 1: complete
-- Phase 2: complete (LLM-backed + fallback)
-- Phase 3: complete (LLM-backed + fallback)
-- Phase 4: complete
-- Phase 5: complete
-
-## Local Setup (From Scratch)
-
-### 1) Prerequisites
+### 1) Prereqs
 - Node.js 18+
 - VS Code
-- Docker Desktop
-  - Enable the WSL 2 engine in Docker Desktop settings
-- NVIDIA GPU drivers with WSL2 GPU support
+- Docker Desktop (WSL2 engine enabled)
+- NVIDIA drivers with WSL2 GPU support
 
-### 2) Clone and install
+### 2) Install
 ```bash
 npm install
 ```
 
-### 3) Start the local LLM (vLLM)
-This project uses vLLM with a quantized 32B model that fits in 32 GB VRAM.
-
-PowerShell (detached container):
+### 3) Start vLLM (Docker Compose)
+Set your Hugging Face token:
 ```powershell
 $env:HUGGING_FACE_HUB_TOKEN="<HF_TOKEN>"
-
-docker run --name forge-vllm -d --gpus all `
-  -v $env:USERPROFILE\.cache\huggingface:/root/.cache/huggingface `
-  -e HUGGING_FACE_HUB_TOKEN=$env:HUGGING_FACE_HUB_TOKEN `
-  -p 8000:8000 `
-  --ipc=host `
-  vllm/vllm-openai:latest `
-  Qwen/Qwen2.5-Coder-32B-Instruct-AWQ `
-  --quantization awq_marlin `
-  --dtype auto `
-  --max-model-len 8192 `
-  --gpu-memory-utilization 0.85
 ```
 
-Wait for:
-```
-Uvicorn running on http://0.0.0.0:8000
-```
-
-Verify:
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/v1/models
-```
-
-Or use Docker Compose (recommended):
+Start:
 ```powershell
 docker compose up -d
 ```
@@ -125,54 +154,51 @@ Stop:
 docker compose down
 ```
 
-Restart:
-```powershell
-docker compose restart
-```
-
-Tail logs:
+Logs:
 ```powershell
 docker logs -f forge-vllm
 ```
 
-PowerShell helper:
+Helper:
 ```powershell
 .\scripts\start-vllm.ps1
 ```
 
-### 4) Configure Forge in VS Code
-Open Settings:
-- Ctrl+, (comma)
-- Or Ctrl+Shift+P -> Preferences: Open Settings
+Verify:
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/v1/models
+```
 
-Search for "Forge" and set:
+### 4) Configure Forge (VS Code Settings)
+Open Settings and search for "Forge".
+
+Key settings:
 - forge.llmEndpoint (default: http://127.0.0.1:8000/v1)
 - forge.llmModel (default: Qwen/Qwen2.5-Coder-32B-Instruct-AWQ)
 - forge.llmApiKey (optional)
-- forge.enableMultiFile (optional)
-- forge.autoValidation (optional)
-- forge.autoFixValidation (optional)
-- forge.autoFixMaxRetries (optional)
-- forge.skipTargetConfirmation (optional)
-- forge.skipConfirmations (optional)
-- forge.showDiffPreview (optional)
-- forge.llmTimeoutMs (optional)
-- forge.verboseLogs (optional)
-- forge.keepAliveSeconds (optional)
-- forge.enableGitWorkflow (optional)
+- forge.enableMultiFile
+- forge.autoValidation
+- forge.autoFixValidation
+- forge.autoFixMaxRetries
+- forge.skipTargetConfirmation
+- forge.skipConfirmations
+- forge.showDiffPreview
+- forge.llmTimeoutMs
+- forge.verboseLogs
+- forge.keepAliveSeconds
+- forge.enableGitWorkflow
 
-You can also use environment variables:
+Environment variables:
 - FORGE_LLM_ENDPOINT
 - FORGE_LLM_MODEL
 - FORGE_LLM_API_KEY
 - FORGE_LLM_TIMEOUT_MS
 
-Example settings.json:
+Example settings:
 ```json
 {
   "forge.llmEndpoint": "http://127.0.0.1:8000/v1",
   "forge.llmModel": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
-  "forge.llmApiKey": "",
   "forge.enableMultiFile": true,
   "forge.autoValidation": true,
   "forge.autoFixValidation": true,
@@ -187,30 +213,22 @@ Example settings.json:
 }
 ```
 
-### 5) Build the extension
+### 5) Build & Run
 ```bash
 npm run compile
 ```
 
-### 6) Run the extension
 - Press F5 to open the Extension Development Host.
-- In the new window, open a file you want to edit.
-- Run the command: Forge: UI (recommended) or Forge: Run.
-- Or open the Forge icon in the Activity Bar.
+- Run "Forge: UI" or click the Forge Activity Bar icon.
 
-### Commands
-- Forge: Run (edit from an input box)
-- Forge: UI (open the Forge panel)
-- Forge: Context (print ProjectContext to Output panel)
-### Views
-- Forge (Activity Bar sidebar)
+## Usage
+1) Open a file (single-file mode) or enable multi-file mode.
+2) Enter an instruction in the UI.
+3) Confirm file selection (multi-file).
+4) Review inline diff preview.
+5) Apply changes and optionally run validation.
 
-### 7) Test a change
-- Enter a short instruction when prompted.
-- Use the file picker to confirm targets (multi-file).
-- Review inline change preview in the chat.
-
-### UI Shortcuts
+## UI Shortcuts
 - Enter: send
 - Shift+Enter: newline
 - Esc: stop
@@ -229,13 +247,12 @@ npm run compile
 - src/ui/
 - docker-compose.yml
 - scripts/start-vllm.ps1
-- phase0-setup.txt (full vLLM setup and troubleshooting)
 
 ## Safety Rules
-- Multi-file edits are allowed, but only for selected files
-- Optional confirmations (can be skipped via settings)
+- Multi-file edits require file selection
 - No hidden Git actions
-- Comments are only added when explicitly requested (and placed above code lines)
+- Confirmations are optional (settings)
+- Comments are only added when explicitly requested
 
 ## LLM Usage Policy
 - Context Harvester: NO
@@ -246,7 +263,9 @@ npm run compile
 - Git Execution: NO
 - Commit Messages: YES
 
-## Possible Enhancements (Later)
-- Add per-project profiles (model, endpoint, policies)
-- Add richer context search (symbols + diagnostics + references)
-- Add optional snapshots for revert
+## Troubleshooting
+- If the model fails to start, verify GPU access in Docker and set HUGGING_FACE_HUB_TOKEN.
+- If the UI seems stuck, use Esc (stop) and check Output: "Forge".
+
+## Next
+If you want to proceed with Phase 6, say the word and I will implement the Git Manager hardening.
