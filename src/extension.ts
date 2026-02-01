@@ -1,22 +1,13 @@
-// Node utilities for filesystem access and HTTP requests.
+// Node utilities for filesystem access and paths.
 import * as fs from 'fs';
-import * as http from 'http';
-import * as https from 'https';
 import * as path from 'path';
 // VS Code extension API.
 import * as vscode from 'vscode';
 // Context harvester for Phase 1.
 import { harvestContext, type ProjectContext } from './context';
+import type { ChatCompletionResponse, ChatMessage } from './llm/client';
+import { callChatCompletion } from './llm/client';
 
-type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
-
-type ChatCompletionResponse = {
-  choices?: Array<{ message?: { content?: string } }>;
-  error?: { message?: string };
-};
-
-const DEFAULT_LLM_ENDPOINT = 'http://127.0.0.1:8000/v1';
-const DEFAULT_LLM_MODEL = 'Qwen/Qwen2.5-Coder-32B-Instruct-AWQ';
 
 export function activate(context: vscode.ExtensionContext): void {
   // Output channel visible in View -> Output.
@@ -103,16 +94,9 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     ];
 
-    // Call the LLM server.
-    const config = vscode.workspace.getConfiguration('forge');
-    const endpoint = config.get<string>('llmEndpoint') ?? process.env.FORGE_LLM_ENDPOINT ?? DEFAULT_LLM_ENDPOINT;
-    const model = config.get<string>('llmModel') ?? process.env.FORGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
-    const apiKeySetting = config.get<string>('llmApiKey');
-    const apiKey = apiKeySetting && apiKeySetting.trim().length > 0 ? apiKeySetting : process.env.FORGE_LLM_API_KEY;
-
     let diffText: string;
     try {
-      const response = await callChatCompletion(endpoint, model, messages, apiKey);
+      const response = await callChatCompletion({}, messages);
       diffText = extractUnifiedDiff(response);
     } catch (error) {
       output.appendLine(`LLM error: ${String(error)}`);
@@ -186,66 +170,6 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
-
-async function callChatCompletion(
-  endpoint: string,
-  model: string,
-  messages: ChatMessage[],
-  apiKey?: string
-): Promise<ChatCompletionResponse> {
-  const url = new URL(endpoint.replace(/\/$/, '') + '/chat/completions');
-  const body = JSON.stringify({
-    model,
-    messages,
-    temperature: 0,
-    stream: false
-  });
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(body).toString()
-  };
-
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  }
-
-  const isHttps = url.protocol === 'https:';
-  const requestOptions: http.RequestOptions = {
-    method: 'POST',
-    hostname: url.hostname,
-    port: url.port,
-    path: url.pathname,
-    headers
-  };
-
-  const requester = isHttps ? https : http;
-
-  return new Promise((resolve, reject) => {
-    const req = requester.request(requestOptions, (res) => {
-      let data = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(data) as ChatCompletionResponse);
-        } catch (error) {
-          reject(new Error(`Invalid JSON response: ${String(error)}`));
-        }
-      });
-    });
-
-    req.on('error', (error) => reject(error));
-    req.write(body);
-    req.end();
-  });
-}
 
 function logContext(output: vscode.OutputChannel, contextObject: ProjectContext): void {
   output.clear();

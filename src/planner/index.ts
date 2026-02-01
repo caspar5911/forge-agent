@@ -1,5 +1,8 @@
 // Node path utilities for safe relative path handling.
 import * as path from 'path';
+import type { LLMConfig } from '../llm/config';
+import type { ChatCompletionResponse, ChatMessage } from '../llm/client';
+import { callChatCompletion } from '../llm/client';
 // Task plan type from the compressor phase.
 import type { TaskPlan } from '../compressor/index';
 
@@ -34,8 +37,24 @@ export type PlannerInput = {
   previousResults?: ToolResult[];
 };
 
-// Pick the next single safe tool call based on the plan step.
-export function nextToolCall(input: PlannerInput): ToolCall {
+// Pick the next single safe tool call based on the plan step using the local LLM.
+export async function nextToolCall(
+  input: PlannerInput,
+  config: LLMConfig = {}
+): Promise<ToolCall> {
+  const messages = buildMessages(input);
+
+  try {
+    const response = await callChatCompletion(config, messages);
+    return parseToolCall(response);
+  } catch {
+    // Fall back to deterministic planning if the LLM fails.
+    return nextToolCallLocal(input);
+  }
+}
+
+// Deterministic fallback planner logic.
+export function nextToolCallLocal(input: PlannerInput): ToolCall {
   const previousResults = input.previousResults ?? [];
   const { plan, context } = input;
 
@@ -171,4 +190,76 @@ function pickValidationCommand(stepLower: string, context: ProjectContext): stri
     return `bun run ${scriptName}`;
   }
   return `npm run ${scriptName}`;
+}
+
+function buildMessages(input: PlannerInput): ChatMessage[] {
+  const { plan, context } = input;
+  const previousResults = input.previousResults ?? [];
+  const stepIndex =
+    plan.kind === 'plan' && plan.steps.length > 0
+      ? Math.min(previousResults.length, plan.steps.length - 1)
+      : 0;
+  const step = plan.kind === 'plan' && plan.steps.length > 0 ? plan.steps[stepIndex] : null;
+
+  return [
+    {
+      role: 'system',
+      content:
+        'You are a planner. Return ONLY valid JSON with one of these shapes: ' +
+        '{"tool":"read_file","path":"..."} or {"tool":"request_diff"} or {"tool":"run_validation_command","command":"..."}. ' +
+        'Do not include code fences, comments, or extra text. Choose the next single safe action.'
+    },
+    {
+      role: 'user',
+      content:
+        `TaskPlan:\n${JSON.stringify(plan, null, 2)}\n\n` +
+        `ProjectContext:\n${JSON.stringify(context, null, 2)}\n\n` +
+        `PreviousResults:\n${JSON.stringify(previousResults, null, 2)}\n\n` +
+        `CurrentStepIndex: ${stepIndex}\n` +
+        `CurrentStep: ${step ?? 'N/A'}\n`
+    }
+  ];
+}
+
+function parseToolCall(response: ChatCompletionResponse): ToolCall {
+  const content = response.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    const errorMessage = response.error?.message ?? 'No content returned by LLM.';
+    throw new Error(errorMessage);
+  }
+
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1].trim() : content;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid JSON from LLM: ${String(error)}`);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('LLM output is not a JSON object.');
+  }
+
+  const toolCall = parsed as { tool?: unknown; path?: unknown; command?: unknown };
+  if (toolCall.tool === 'read_file') {
+    if (typeof toolCall.path !== 'string' || toolCall.path.trim().length === 0) {
+      throw new Error('read_file requires a non-empty path.');
+    }
+    return { tool: 'read_file', path: toolCall.path };
+  }
+
+  if (toolCall.tool === 'request_diff') {
+    return { tool: 'request_diff' };
+  }
+
+  if (toolCall.tool === 'run_validation_command') {
+    if (typeof toolCall.command !== 'string' || toolCall.command.trim().length === 0) {
+      throw new Error('run_validation_command requires a non-empty command.');
+    }
+    return { tool: 'run_validation_command', command: toolCall.command };
+  }
+
+  throw new Error('LLM output has an invalid tool.');
 }

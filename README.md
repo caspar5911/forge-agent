@@ -35,7 +35,7 @@ Phase 2 - Task Compressor
 
 Phase 3 - Planner Hardening
 - Read plan + context
-- Emit one tool call at a time
+- Emit one tool call at a time (LLM-backed)
 - Strict tool contracts (read file / request diff / run validation)
 
 Phase 4 - Validation and Git Integration
@@ -59,7 +59,7 @@ Phase 5 - UX and Polish
 - Phase 0: complete
 - Phase 1: complete
 - Phase 2: complete (LLM-backed + fallback)
-- Phase 3: complete (deterministic planner)
+- Phase 3: complete (LLM-backed + fallback)
 - Phase 4: pending
 - Phase 5: pending
 
@@ -155,6 +155,7 @@ npm run compile
 - src/context/
 - src/compressor/
 - src/planner/
+- src/llm/
 - phase0-setup.txt (full vLLM setup and troubleshooting)
 
 ## Safety Rules

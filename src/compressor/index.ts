@@ -1,6 +1,6 @@
-// Node utilities for HTTP requests.
-import * as http from 'http';
-import * as https from 'https';
+import type { LLMConfig } from '../llm/config';
+import type { ChatCompletionResponse, ChatMessage } from '../llm/client';
+import { callChatCompletion } from '../llm/client';
 
 // Minimal shape for any project context data.
 export type ProjectContext = Record<string, unknown>;
@@ -9,25 +9,6 @@ export type ProjectContext = Record<string, unknown>;
 export type TaskPlan =
   | { kind: 'clarification'; questions: string[] }
   | { kind: 'plan'; steps: string[] };
-
-// LLM configuration settings for the compressor.
-export type LLMConfig = {
-  endpoint?: string;
-  model?: string;
-  apiKey?: string;
-  timeoutMs?: number;
-};
-
-type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
-
-type ChatCompletionResponse = {
-  choices?: Array<{ message?: { content?: string } }>;
-  error?: { message?: string };
-};
-
-const DEFAULT_LLM_ENDPOINT = 'http://127.0.0.1:8000/v1';
-const DEFAULT_LLM_MODEL = 'Qwen/Qwen2.5-Coder-32B-Instruct-AWQ';
-const DEFAULT_TIMEOUT_MS = 30_000;
 
 // Convert a short instruction into either questions or an ordered plan using the local LLM.
 export async function compressTask(
@@ -47,15 +28,10 @@ export async function compressTask(
     };
   }
 
-  const endpoint = config.endpoint ?? process.env.FORGE_LLM_ENDPOINT ?? DEFAULT_LLM_ENDPOINT;
-  const model = config.model ?? process.env.FORGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
-  const apiKey = config.apiKey ?? process.env.FORGE_LLM_API_KEY;
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
   const messages = buildMessages(trimmed, context);
 
   try {
-    const response = await callChatCompletion(endpoint, model, messages, apiKey, timeoutMs);
+    const response = await callChatCompletion(config, messages);
     const plan = parseTaskPlan(response);
     return plan;
   } catch {
@@ -135,65 +111,6 @@ function buildMessages(instruction: string, context: ProjectContext): ChatMessag
       content: `Instruction:\n${instruction}\n\nProjectContext:\n${contextJson}`
     }
   ];
-}
-
-async function callChatCompletion(
-  endpoint: string,
-  model: string,
-  messages: ChatMessage[],
-  apiKey: string | undefined,
-  timeoutMs: number
-): Promise<ChatCompletionResponse> {
-  const url = new URL(endpoint.replace(/\/$/, '') + '/chat/completions');
-  const body = JSON.stringify({ model, messages, temperature: 0, stream: false });
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(body).toString()
-  };
-
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  }
-
-  const isHttps = url.protocol === 'https:';
-  const requestOptions: http.RequestOptions = {
-    method: 'POST',
-    hostname: url.hostname,
-    port: url.port,
-    path: url.pathname,
-    headers
-  };
-
-  const requester = isHttps ? https : http;
-
-  return new Promise((resolve, reject) => {
-    const req = requester.request(requestOptions, (res) => {
-      let data = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(data) as ChatCompletionResponse);
-        } catch (error) {
-          reject(new Error(`Invalid JSON response: ${String(error)}`));
-        }
-      });
-    });
-
-    req.on('error', (error) => reject(error));
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error('LLM request timed out.'));
-    });
-    req.write(body);
-    req.end();
-  });
 }
 
 function parseTaskPlan(response: ChatCompletionResponse): TaskPlan {
