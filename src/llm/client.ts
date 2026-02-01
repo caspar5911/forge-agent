@@ -47,6 +47,16 @@ export async function callChatCompletion(
   return requestChatCompletion(resolved, messages, signal);
 }
 
+export async function callChatCompletionStream(
+  config: LLMConfig,
+  messages: ChatMessage[],
+  onDelta: (text: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const resolved = resolveLLMConfig(config);
+  return requestChatCompletionStream(resolved, messages, onDelta, signal);
+}
+
 function requestChatCompletion(
   config: ResolvedLLMConfig,
   messages: ChatMessage[],
@@ -97,6 +107,100 @@ function requestChatCompletion(
         } catch (error) {
           reject(new Error(`Invalid JSON response: ${String(error)}`));
         }
+      });
+    });
+
+    req.on('error', (error) => reject(error));
+    req.setTimeout(config.timeoutMs, () => {
+      req.destroy(new Error('LLM request timed out.'));
+    });
+    if (signal) {
+      if (signal.aborted) {
+        req.destroy(new Error('LLM request aborted.'));
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        req.destroy(new Error('LLM request aborted.'));
+      });
+    }
+    req.write(body);
+    req.end();
+  });
+}
+
+function requestChatCompletionStream(
+  config: ResolvedLLMConfig,
+  messages: ChatMessage[],
+  onDelta: (text: string) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  const url = new URL(config.endpoint.replace(/\/$/, '') + '/chat/completions');
+  const body = JSON.stringify({
+    model: config.model,
+    messages,
+    temperature: 0,
+    stream: true
+  });
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body).toString()
+  };
+
+  if (config.apiKey) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
+
+  const isHttps = url.protocol === 'https:';
+  const requestOptions: http.RequestOptions = {
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port,
+    path: url.pathname,
+    headers
+  };
+
+  const requester = isHttps ? https : http;
+
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    let fullText = '';
+
+    const req = requester.request(requestOptions, (res) => {
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        buffer += chunk;
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) {
+            continue;
+          }
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') {
+            return;
+          }
+          try {
+            const payload = JSON.parse(data) as {
+              choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
+            };
+            const delta = payload.choices?.[0]?.delta?.content ?? payload.choices?.[0]?.message?.content ?? '';
+            if (delta) {
+              fullText += delta;
+              onDelta(delta);
+            }
+          } catch {
+            continue;
+          }
+        }
+      });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        resolve(fullText);
       });
     });
 

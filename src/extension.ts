@@ -8,7 +8,7 @@ import { harvestContext, type ProjectContext } from './context';
 import { buildValidationOptions, runCommand, type ValidationOption } from './validation';
 import { commitAll, getCurrentBranch, getDiffStat, getGitStatus, getRemotes, isGitRepo, push } from './git';
 import type { ChatCompletionResponse, ChatMessage } from './llm/client';
-import { callChatCompletion, pingLLM } from './llm/client';
+import { callChatCompletion, callChatCompletionStream, pingLLM } from './llm/client';
 import type { ForgeUiApi } from './ui/api';
 import { ForgePanel } from './ui/panel';
 import { ForgeViewProvider } from './ui/view';
@@ -1331,6 +1331,26 @@ async function logActionPurpose(
   const messages = buildActionPurposeMessages(instruction, files);
   logOutput(output, panelApi, 'Summarizing actions...');
   try {
+    if (panelApi?.appendStream) {
+      panelApi.startStream?.('assistant');
+      const content = await callChatCompletionStream(
+        {},
+        messages,
+        (delta) => panelApi.appendStream?.(delta),
+        signal
+      );
+      panelApi.endStream?.();
+      if (!content) {
+        return;
+      }
+      content
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .forEach((line) => output.appendLine(line));
+      return;
+    }
+
     const response = await callChatCompletion({}, messages, signal);
     const content = response.choices?.[0]?.message?.content?.trim();
     if (!content) {
@@ -1343,8 +1363,10 @@ async function logActionPurpose(
       .forEach((line) => logOutput(output, panelApi, line));
   } catch (error) {
     if (isAbortError(error)) {
+      panelApi?.endStream?.();
       return;
     }
+    panelApi?.endStream?.();
   }
 }
 
@@ -1625,6 +1647,23 @@ async function answerQuestion(
   const messages = buildQuestionMessages(instruction, context, filesList);
   logOutput(output, panelApi, 'Requesting answer from the local LLM...');
   try {
+    if (panelApi?.appendStream) {
+      panelApi.startStream?.('assistant');
+      const answer = await callChatCompletionStream(
+        {},
+        messages,
+        (delta) => panelApi.appendStream?.(delta),
+        signal
+      );
+      panelApi.endStream?.();
+      if (!answer) {
+        logOutput(output, panelApi, 'No answer returned.');
+        return;
+      }
+      output.appendLine(answer);
+      return;
+    }
+
     const response = await callChatCompletion({}, messages, signal);
     const answer = response.choices?.[0]?.message?.content?.trim();
     if (!answer) {
@@ -1634,9 +1673,11 @@ async function answerQuestion(
     logOutput(output, panelApi, answer);
   } catch (error) {
     if (isAbortError(error)) {
+      panelApi?.endStream?.();
       logOutput(output, panelApi, 'LLM request aborted.');
       return;
     }
+    panelApi?.endStream?.();
     logOutput(output, panelApi, `LLM error: ${String(error)}`);
   }
 }

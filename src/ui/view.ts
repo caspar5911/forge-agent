@@ -67,7 +67,10 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
       setStatus: (text) => this.view?.webview.postMessage({ type: 'status', text }),
       appendLog: (text) => this.view?.webview.postMessage({ type: 'log', text }),
       setActiveFile: (text) => this.view?.webview.postMessage({ type: 'activeFile', text }),
-      appendDiff: (lines) => this.view?.webview.postMessage({ type: 'diff', lines })
+      appendDiff: (lines) => this.view?.webview.postMessage({ type: 'diff', lines }),
+      startStream: (role) => this.view?.webview.postMessage({ type: 'streamStart', role }),
+      appendStream: (text) => this.view?.webview.postMessage({ type: 'stream', text }),
+      endStream: () => this.view?.webview.postMessage({ type: 'streamEnd' })
     };
   }
 

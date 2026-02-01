@@ -115,6 +115,28 @@ export function getForgeHtml(webview: vscode.Webview): string {
         min-height: 0;
       }
 
+      .steps {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .step {
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .step.active {
+        color: #0a0f15;
+        background: linear-gradient(135deg, #4db8ff, #3dd6a1);
+        border-color: transparent;
+      }
+
       .chat {
         flex: 1;
         overflow-y: auto;
@@ -122,6 +144,18 @@ export function getForgeHtml(webview: vscode.Webview): string {
         display: flex;
         flex-direction: column;
         gap: 12px;
+        border-radius: 14px;
+        background: rgba(10, 14, 20, 0.35);
+      }
+
+      .empty {
+        border: 1px dashed rgba(148, 163, 184, 0.3);
+        padding: 16px;
+        border-radius: 12px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        background: rgba(13, 18, 26, 0.7);
       }
 
       .message {
@@ -185,6 +219,25 @@ export function getForgeHtml(webview: vscode.Webview): string {
         font-size: 12px;
       }
 
+      .message.error {
+        align-self: center;
+        background: rgba(248, 81, 73, 0.15);
+        color: #ffd4d1;
+        border-color: rgba(248, 81, 73, 0.4);
+      }
+
+      .message.streaming {
+        position: relative;
+      }
+
+      .message.streaming::after {
+        content: "▍";
+        display: inline-block;
+        margin-left: 2px;
+        color: #9fb0c2;
+        animation: blink 1s steps(2, start) infinite;
+      }
+
       .composer {
         margin-top: 16px;
         display: flex;
@@ -228,6 +281,12 @@ export function getForgeHtml(webview: vscode.Webview): string {
         background: linear-gradient(135deg, var(--accent), #22d3ee);
         color: #08121a;
         box-shadow: 0 10px 24px rgba(34, 211, 238, 0.2);
+      }
+
+      .primary.running {
+        background: linear-gradient(135deg, #ffb84d, #ff7a59);
+        color: #2b1103;
+        box-shadow: 0 10px 24px rgba(255, 122, 89, 0.25);
       }
 
       .ghost {
@@ -341,6 +400,12 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       }
 
+      @keyframes blink {
+        to {
+          opacity: 0;
+        }
+      }
+
       @media (max-width: 720px) {
         .hero {
           flex-direction: column;
@@ -372,6 +437,13 @@ export function getForgeHtml(webview: vscode.Webview): string {
       </div>
 
       <div class="card">
+        <div class="steps" id="steps">
+          <div class="step active" data-step="ready">Ready</div>
+          <div class="step" data-step="select">Select</div>
+          <div class="step" data-step="update">Update</div>
+          <div class="step" data-step="apply">Apply</div>
+          <div class="step" data-step="validate">Validate</div>
+        </div>
         <div class="chat" id="chat"></div>
         <div class="composer">
           <textarea id="prompt" placeholder="Ask Forge to change the active file..."></textarea>
@@ -408,6 +480,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
       const clear = document.getElementById('clear');
       const status = document.getElementById('status');
       const chat = document.getElementById('chat');
+      const steps = document.getElementById('steps');
       const activeFileName = document.getElementById('active-file-name');
       const fileModal = document.getElementById('file-modal');
       const fileList = document.getElementById('file-list');
@@ -417,18 +490,79 @@ export function getForgeHtml(webview: vscode.Webview): string {
       const fileCount = document.getElementById('file-count');
       let currentFiles = [];
       let preselectedFiles = [];
+      let emptyState = null;
+      let streamMessage = null;
+
+      const ensureEmptyState = () => {
+        if (!emptyState) {
+          emptyState = document.createElement('div');
+          emptyState.className = 'empty';
+          emptyState.innerHTML =
+            '<strong>Try:</strong><br>' +
+            '• Add comments to App.tsx<br>' +
+            '• Remove unused imports in Timesheet.tsx<br>' +
+            '• Fix validation errors for the project<br><br>' +
+            '<strong>Shortcuts:</strong> Enter to send, Shift+Enter for a new line, Esc to stop.';
+        }
+        if (chat.children.length === 0) {
+          chat.appendChild(emptyState);
+        }
+      };
+
+      const updateEmptyState = () => {
+        if (chat.children.length === 0) {
+          ensureEmptyState();
+          return;
+        }
+        if (emptyState && chat.contains(emptyState) && chat.children.length > 1) {
+          emptyState.remove();
+        }
+      };
+
+      const classifyAssistantMessage = (text) => {
+        const lower = text.toLowerCase();
+        if (lower.includes('error') || lower.includes('failed')) {
+          return 'error';
+        }
+        if (lower.includes('cancelled') || lower.includes('no changes')) {
+          return 'system';
+        }
+        return 'assistant';
+      };
+
+      const setStep = (key) => {
+        if (!steps) return;
+        const items = steps.querySelectorAll('.step');
+        items.forEach((item) => {
+          if (item.dataset.step === key) {
+            item.classList.add('active');
+          } else {
+            item.classList.remove('active');
+          }
+        });
+      };
 
       const addMessage = (role, text) => {
         if (!text) return;
+        if (streamMessage) {
+          streamMessage.classList.remove('streaming');
+          streamMessage = null;
+        }
         const message = document.createElement('div');
-        message.className = 'message ' + role;
+        const resolvedRole = role === 'assistant' ? classifyAssistantMessage(text) : role;
+        message.className = 'message ' + resolvedRole;
         message.textContent = text;
         chat.appendChild(message);
         chat.scrollTop = chat.scrollHeight;
+        updateEmptyState();
       };
 
       const addDiff = (lines) => {
         if (!lines || !lines.length) return;
+        if (streamMessage) {
+          streamMessage.classList.remove('streaming');
+          streamMessage = null;
+        }
         const message = document.createElement('div');
         message.className = 'message diff';
         lines.forEach((line) => {
@@ -444,6 +578,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         });
         chat.appendChild(message);
         chat.scrollTop = chat.scrollHeight;
+        updateEmptyState();
       };
 
       run.addEventListener('click', () => {
@@ -452,6 +587,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           status.textContent = 'Stopping...';
           run.textContent = 'Send';
           run.dataset.mode = 'send';
+          run.classList.remove('running');
           vscode.postMessage({ type: 'stop' });
           return;
         }
@@ -462,6 +598,8 @@ export function getForgeHtml(webview: vscode.Webview): string {
         status.textContent = 'Running...';
         run.textContent = 'Stop';
         run.dataset.mode = 'stop';
+        run.classList.add('running');
+        setStep('update');
         addMessage('user', text);
         prompt.value = '';
         vscode.postMessage({ type: 'run', text });
@@ -474,12 +612,30 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       });
 
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && run.dataset.mode === 'stop') {
+          event.preventDefault();
+          run.click();
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+          event.preventDefault();
+          clear.click();
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === '/') {
+          event.preventDefault();
+          prompt.focus();
+        }
+      });
+
       clear.addEventListener('click', () => {
         prompt.value = '';
         status.textContent = 'Idle';
         chat.textContent = '';
         run.textContent = 'Send';
         run.dataset.mode = 'send';
+        run.classList.remove('running');
+        setStep('ready');
+        ensureEmptyState();
         vscode.postMessage({ type: 'clear' });
       });
 
@@ -487,9 +643,22 @@ export function getForgeHtml(webview: vscode.Webview): string {
         const message = event.data;
         if (message.type === 'status') {
           status.textContent = message.text;
-          if (message.text.toLowerCase().includes('stopped') || message.text.toLowerCase().includes('done')) {
+          const lower = message.text.toLowerCase();
+          if (lower.includes('select')) {
+            setStep('select');
+          } else if (lower.includes('requesting') || lower.includes('llm') || lower.includes('update')) {
+            setStep('update');
+          } else if (lower.includes('apply')) {
+            setStep('apply');
+          } else if (lower.includes('validation')) {
+            setStep('validate');
+          } else if (lower.includes('done') || lower.includes('idle') || lower.includes('stopped')) {
+            setStep('ready');
+          }
+          if (lower.includes('stopped') || lower.includes('done')) {
             run.textContent = 'Send';
             run.dataset.mode = 'send';
+            run.classList.remove('running');
           }
         }
         if (message.type === 'activeFile') {
@@ -501,15 +670,46 @@ export function getForgeHtml(webview: vscode.Webview): string {
         if (message.type === 'diff') {
           addDiff(message.lines || []);
         }
+        if (message.type === 'streamStart') {
+          if (streamMessage) {
+            streamMessage.remove();
+          }
+          streamMessage = document.createElement('div');
+          const role = message.role || 'assistant';
+          streamMessage.className = 'message ' + role + ' streaming';
+          streamMessage.textContent = '';
+          chat.appendChild(streamMessage);
+          chat.scrollTop = chat.scrollHeight;
+          updateEmptyState();
+        }
+        if (message.type === 'stream') {
+          if (!streamMessage) {
+            streamMessage = document.createElement('div');
+            streamMessage.className = 'message assistant streaming';
+            chat.appendChild(streamMessage);
+          }
+          streamMessage.textContent += message.text || '';
+          chat.scrollTop = chat.scrollHeight;
+          updateEmptyState();
+        }
+        if (message.type === 'streamEnd') {
+          if (streamMessage) {
+            streamMessage.classList.remove('streaming');
+            streamMessage = null;
+          }
+        }
         if (message.type === 'fileSelection') {
           currentFiles = Array.isArray(message.files) ? message.files : [];
           preselectedFiles = Array.isArray(message.preselected) ? message.preselected : [];
           renderFileList(currentFiles);
           fileSearch.value = '';
           fileModal.classList.add('show');
+          setStep('select');
         }
         if (message.type === 'clear') {
           chat.textContent = '';
+          streamMessage = null;
+          ensureEmptyState();
         }
       });
 
@@ -550,12 +750,16 @@ export function getForgeHtml(webview: vscode.Webview): string {
           .map((input) => input.value);
         fileModal.classList.remove('show');
         vscode.postMessage({ type: 'fileSelectionResult', files: selected });
+        setStep('update');
       });
 
       fileCancel.addEventListener('click', () => {
         fileModal.classList.remove('show');
         vscode.postMessage({ type: 'fileSelectionResult', files: [] });
+        setStep('ready');
       });
+
+      ensureEmptyState();
     </script>
   </body>
 </html>`;

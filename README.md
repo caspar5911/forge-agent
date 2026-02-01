@@ -12,6 +12,8 @@ Forge is an on-prem, agentic AI coding system that turns short natural-language 
 - Runs validation automatically and can auto-fix failures
 - Integrates with Git only with explicit approval
 - Answers project questions from context
+- Provides UI shortcuts and step indicators for status
+- Streams assistant responses in the UI
 
 ## Roadmap (Phased Delivery)
 
@@ -67,7 +69,7 @@ Phase 5 - UX and Polish
 - Phase 2: complete (LLM-backed + fallback)
 - Phase 3: complete (LLM-backed + fallback)
 - Phase 4: complete
-- Phase 5: in progress (UI panel + sidebar + file picker complete, polish ongoing)
+- Phase 5: complete
 
 ## Local Setup (From Scratch)
 
@@ -208,6 +210,13 @@ npm run compile
 - Use the file picker to confirm targets (multi-file).
 - Review inline change preview in the chat.
 
+### UI Shortcuts
+- Enter: send
+- Shift+Enter: newline
+- Esc: stop
+- Ctrl/Cmd+L: clear
+- Ctrl/Cmd+/: focus prompt
+
 ## Project Structure
 - src/extension.ts
 - src/context/
@@ -238,7 +247,6 @@ npm run compile
 - Commit Messages: YES
 
 ## Possible Enhancements (Later)
-- Add streaming LLM responses for long edits
 - Add per-project profiles (model, endpoint, policies)
 - Add richer context search (symbols + diagnostics + references)
 - Add optional snapshots for revert
