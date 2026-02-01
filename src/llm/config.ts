@@ -20,7 +20,10 @@ export function resolveLLMConfig(overrides: LLMConfig = {}): ResolvedLLMConfig {
   const endpoint = overrides.endpoint ?? process.env.FORGE_LLM_ENDPOINT ?? DEFAULT_LLM_ENDPOINT;
   const model = overrides.model ?? process.env.FORGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
   const apiKey = overrides.apiKey ?? process.env.FORGE_LLM_API_KEY;
-  const timeoutMs = overrides.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const envTimeout = process.env.FORGE_LLM_TIMEOUT_MS
+    ? Number(process.env.FORGE_LLM_TIMEOUT_MS)
+    : undefined;
+  const timeoutMs = overrides.timeoutMs ?? envTimeout ?? DEFAULT_TIMEOUT_MS;
 
   return {
     endpoint,

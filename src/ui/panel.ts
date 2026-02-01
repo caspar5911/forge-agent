@@ -1,0 +1,84 @@
+import * as vscode from 'vscode';
+import type { ForgeUiApi } from './api';
+import { getForgeHtml } from './template';
+
+export class ForgePanel {
+  private static currentPanel: ForgePanel | undefined;
+  private readonly panel: vscode.WebviewPanel;
+  private onRun?: (instruction: string) => void;
+  private onStop?: () => void;
+  private pendingSelection?: (files: string[]) => void;
+
+  static createOrShow(): ForgePanel {
+    const existing = ForgePanel.currentPanel;
+    if (existing) {
+      existing.panel.reveal(existing.panel.viewColumn);
+      return existing;
+    }
+
+    const panel = vscode.window.createWebviewPanel('forgePanel', 'Forge', vscode.ViewColumn.Beside, {
+      enableScripts: true,
+      retainContextWhenHidden: true
+    });
+
+    const instance = new ForgePanel(panel);
+    ForgePanel.currentPanel = instance;
+    return instance;
+  }
+
+  static disposeCurrent(): void {
+    ForgePanel.currentPanel?.dispose();
+  }
+
+  private constructor(panel: vscode.WebviewPanel) {
+    this.panel = panel;
+
+    this.panel.onDidDispose(() => this.dispose());
+    this.panel.webview.onDidReceiveMessage((message) => {
+      if (message?.type === 'run' && typeof message.text === 'string') {
+        this.onRun?.(message.text);
+      }
+      if (message?.type === 'stop') {
+        this.onStop?.();
+      }
+      if (message?.type === 'fileSelectionResult' && Array.isArray(message.files)) {
+        this.pendingSelection?.(message.files);
+        this.pendingSelection = undefined;
+      }
+      if (message?.type === 'clear') {
+        this.panel.webview.postMessage({ type: 'clear' });
+      }
+    });
+
+    this.panel.webview.html = getForgeHtml(this.panel.webview);
+  }
+
+  setHandler(handler: (instruction: string) => void): void {
+    this.onRun = handler;
+  }
+
+  setStopHandler(handler: () => void): void {
+    this.onStop = handler;
+  }
+
+  getApi(): ForgeUiApi {
+    return {
+      setStatus: (text) => this.panel.webview.postMessage({ type: 'status', text }),
+      appendLog: (text) => this.panel.webview.postMessage({ type: 'log', text }),
+      setActiveFile: (text) => this.panel.webview.postMessage({ type: 'activeFile', text }),
+      appendDiff: (lines) => this.panel.webview.postMessage({ type: 'diff', lines })
+    };
+  }
+
+  requestFileSelection(files: string[], preselected: string[] = []): Promise<string[]> {
+    return new Promise((resolve) => {
+      this.pendingSelection = resolve;
+      this.panel.webview.postMessage({ type: 'fileSelection', files, preselected });
+    });
+  }
+
+  dispose(): void {
+    ForgePanel.currentPanel = undefined;
+    this.panel.dispose();
+  }
+}

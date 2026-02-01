@@ -1,23 +1,26 @@
 # Forge
 
-Forge is an on-prem, agentic AI coding system that turns short natural-language instructions into safe, validated code changes inside real repositories. The system is deterministic, auditable, and runs locally without hidden automation.
+Forge is an on-prem, agentic AI coding system that turns short natural-language instructions into safe, validated code changes inside real repositories. It runs locally, keeps a clear audit trail, and favors explicit control.
 
 ## What Forge Does
 - Reads real project state
-- Plans step-by-step actions
-- Generates unified diffs and applies them safely
-- Enforces validation gates
+- Lets the LLM plan and edit (single or multi-file)
+- Applies full-file updates safely
+- Shows action + purpose summaries before edits
+- Shows inline diff previews in the chat
+- Auto-selects files from the prompt and confirms in a picker (multi-file)
+- Runs validation automatically and can auto-fix failures
 - Integrates with Git only with explicit approval
-- Fails honestly when requirements are unclear
+- Answers project questions from context
 
 ## Roadmap (Phased Delivery)
 
-Phase 0 - Foundation + LLM Connectivity + Safe Diff Editing
+Phase 0 - Foundation + LLM Connectivity + Safe Editing
 - VS Code extension shell
 - forge.run command
 - Local LLM connection (vLLM OpenAI-compatible API)
 - Single-file full-file generation (LLM returns updated file)
-- Local diff view + user approval + apply
+- Local approval + apply
 
 Phase 1 - Context Harvester
 - Detect workspace root
@@ -42,11 +45,14 @@ Phase 4 - Validation and Git Integration
 - Validation gate (build/test/typecheck)
 - Git commit workflow with explicit approval
 - Optional push with explicit consent
+- Workspace symbol index (LSP) to improve file selection for multi-file edits
 
 Phase 5 - UX and Polish
 - Progress indicators
 - Clear logs and confirmations
 - Documentation and usability improvements
+- Forge UI panel and sidebar view for prompts
+- File selection modal for multi-file edits
 
 ## Milestones
 - M1: Single-file safe edit via agent command (Phase 0)
@@ -61,7 +67,7 @@ Phase 5 - UX and Polish
 - Phase 2: complete (LLM-backed + fallback)
 - Phase 3: complete (LLM-backed + fallback)
 - Phase 4: complete
-- Phase 5: pending
+- Phase 5: in progress (UI panel + sidebar + file picker complete, polish ongoing)
 
 ## Local Setup (From Scratch)
 
@@ -107,6 +113,31 @@ Verify:
 Invoke-RestMethod http://127.0.0.1:8000/v1/models
 ```
 
+Or use Docker Compose (recommended):
+```powershell
+docker compose up -d
+```
+
+Stop:
+```powershell
+docker compose down
+```
+
+Restart:
+```powershell
+docker compose restart
+```
+
+Tail logs:
+```powershell
+docker logs -f forge-vllm
+```
+
+PowerShell helper:
+```powershell
+.\scripts\start-vllm.ps1
+```
+
 ### 4) Configure Forge in VS Code
 Open Settings:
 - Ctrl+, (comma)
@@ -116,18 +147,41 @@ Search for "Forge" and set:
 - forge.llmEndpoint (default: http://127.0.0.1:8000/v1)
 - forge.llmModel (default: Qwen/Qwen2.5-Coder-32B-Instruct-AWQ)
 - forge.llmApiKey (optional)
+- forge.enableMultiFile (optional)
+- forge.autoValidation (optional)
+- forge.autoFixValidation (optional)
+- forge.autoFixMaxRetries (optional)
+- forge.skipTargetConfirmation (optional)
+- forge.skipConfirmations (optional)
+- forge.showDiffPreview (optional)
+- forge.llmTimeoutMs (optional)
+- forge.verboseLogs (optional)
+- forge.keepAliveSeconds (optional)
+- forge.enableGitWorkflow (optional)
 
 You can also use environment variables:
 - FORGE_LLM_ENDPOINT
 - FORGE_LLM_MODEL
 - FORGE_LLM_API_KEY
+- FORGE_LLM_TIMEOUT_MS
 
 Example settings.json:
 ```json
 {
   "forge.llmEndpoint": "http://127.0.0.1:8000/v1",
   "forge.llmModel": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
-  "forge.llmApiKey": ""
+  "forge.llmApiKey": "",
+  "forge.enableMultiFile": true,
+  "forge.autoValidation": true,
+  "forge.autoFixValidation": true,
+  "forge.autoFixMaxRetries": 5,
+  "forge.skipTargetConfirmation": false,
+  "forge.skipConfirmations": false,
+  "forge.showDiffPreview": false,
+  "forge.llmTimeoutMs": 120000,
+  "forge.verboseLogs": false,
+  "forge.keepAliveSeconds": 0,
+  "forge.enableGitWorkflow": false
 }
 ```
 
@@ -139,16 +193,20 @@ npm run compile
 ### 6) Run the extension
 - Press F5 to open the Extension Development Host.
 - In the new window, open a file you want to edit.
-- Run the command: Forge: Run
+- Run the command: Forge: UI (recommended) or Forge: Run.
+- Or open the Forge icon in the Activity Bar.
 
 ### Commands
-- Forge: Run (LLM diff edit on the active file)
+- Forge: Run (edit from an input box)
+- Forge: UI (open the Forge panel)
 - Forge: Context (print ProjectContext to Output panel)
+### Views
+- Forge (Activity Bar sidebar)
 
 ### 7) Test a change
 - Enter a short instruction when prompted.
-- Review the proposed diff.
-- Approve to apply the change.
+- Use the file picker to confirm targets (multi-file).
+- Review inline change preview in the chat.
 
 ## Project Structure
 - src/extension.ts
@@ -158,11 +216,15 @@ npm run compile
 - src/llm/
 - src/validation/
 - src/git/
+- src/indexer/
+- src/ui/
+- docker-compose.yml
+- scripts/start-vllm.ps1
 - phase0-setup.txt (full vLLM setup and troubleshooting)
 
 ## Safety Rules
-- Single-file edits only
-- Explicit user approval before writing changes
+- Multi-file edits are allowed, but only for selected files
+- Optional confirmations (can be skipped via settings)
 - No hidden Git actions
 - Comments are only added when explicitly requested (and placed above code lines)
 
@@ -176,9 +238,7 @@ npm run compile
 - Commit Messages: YES
 
 ## Possible Enhancements (Later)
-- Make default validation command configurable in settings
-- Add dedicated commands: Forge: Validate, Forge: Git Status, Forge: Commit
-- Add richer diff summaries (files changed, line counts)
 - Add streaming LLM responses for long edits
 - Add per-project profiles (model, endpoint, policies)
-- Add safe multi-file edits (Phase 5+)
+- Add richer context search (symbols + diagnostics + references)
+- Add optional snapshots for revert

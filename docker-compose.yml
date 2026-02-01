@@ -1,0 +1,23 @@
+services:
+  forge-vllm:
+    image: vllm/vllm-openai:latest
+    container_name: forge-vllm
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    ipc: host
+    gpus: all
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    volumes:
+      - ${USERPROFILE}/.cache/huggingface:/root/.cache/huggingface
+    command:
+      - Qwen/Qwen2.5-Coder-32B-Instruct-AWQ
+      - --quantization
+      - awq_marlin
+      - --dtype
+      - auto
+      - --max-model-len
+      - "4096"
+      - --gpu-memory-utilization
+      - "0.85"

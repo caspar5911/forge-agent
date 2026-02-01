@@ -18,10 +18,31 @@
         "title": "Forge: Run"
       },
       {
+        "command": "forge.ui",
+        "title": "Forge: UI"
+      },
+      {
         "command": "forge.context",
         "title": "Forge: Context"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "forge",
+          "title": "Forge",
+          "icon": "resources/forge.svg"
+        }
+      ]
+    },
+    "views": {
+      "forge": [
+        {
+          "id": "forge.view",
+          "name": "Forge"
+        }
+      ]
+    },
     "configuration": {
       "title": "Forge",
       "properties": {
@@ -39,6 +60,64 @@
           "type": "string",
           "default": "",
           "description": "Optional API key for the local LLM server."
+        },
+        "forge.skipTargetConfirmation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip the confirmation prompt before editing the active file."
+        },
+        "forge.skipConfirmations": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically accept confirmation prompts (apply changes, git workflow, commit, push)."
+        },
+        "forge.showDiffPreview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a diff preview tab before applying changes."
+        },
+        "forge.autoValidation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically select and run the best validation command (test > typecheck > lint > build)."
+        },
+        "forge.enableMultiFile": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the LLM to edit multiple files in one run."
+        },
+        "forge.autoFixValidation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attempt to auto-fix validation failures using the LLM."
+        },
+        "forge.autoFixMaxRetries": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Maximum number of auto-fix attempts after validation fails."
+        },
+        "forge.llmTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for LLM requests."
+        },
+        "forge.verboseLogs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show verbose diagnostic logs in the Forge output panel."
+        },
+        "forge.keepAliveSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Ping the LLM every N seconds to keep it warm (0 disables)."
+        },
+        "forge.enableGitWorkflow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the Git workflow (status, commit, push) after changes."
         }
       }
     }

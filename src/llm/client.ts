@@ -10,17 +10,47 @@ export type ChatCompletionResponse = {
   error?: { message?: string };
 };
 
+export function pingLLM(config: LLMConfig = {}): Promise<void> {
+  const resolved = resolveLLMConfig(config);
+  const url = new URL(resolved.endpoint.replace(/\/$/, '') + '/models');
+  const isHttps = url.protocol === 'https:';
+  const requester = isHttps ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = requester.request(
+      {
+        method: 'GET',
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname
+      },
+      (res) => {
+        res.on('data', () => undefined);
+        res.on('end', () => resolve());
+      }
+    );
+
+    req.on('error', (error) => reject(error));
+    req.setTimeout(resolved.timeoutMs, () => {
+      req.destroy(new Error('LLM ping timed out.'));
+    });
+    req.end();
+  });
+}
+
 export async function callChatCompletion(
   config: LLMConfig,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  signal?: AbortSignal
 ): Promise<ChatCompletionResponse> {
   const resolved = resolveLLMConfig(config);
-  return requestChatCompletion(resolved, messages);
+  return requestChatCompletion(resolved, messages, signal);
 }
 
 function requestChatCompletion(
   config: ResolvedLLMConfig,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  signal?: AbortSignal
 ): Promise<ChatCompletionResponse> {
   const url = new URL(config.endpoint.replace(/\/$/, '') + '/chat/completions');
   const body = JSON.stringify({
@@ -74,6 +104,15 @@ function requestChatCompletion(
     req.setTimeout(config.timeoutMs, () => {
       req.destroy(new Error('LLM request timed out.'));
     });
+    if (signal) {
+      if (signal.aborted) {
+        req.destroy(new Error('LLM request aborted.'));
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        req.destroy(new Error('LLM request aborted.'));
+      });
+    }
     req.write(body);
     req.end();
   });

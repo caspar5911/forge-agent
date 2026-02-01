@@ -34,15 +34,29 @@ export function buildValidationOptions(
   return options;
 }
 
-export function runCommand(command: string, cwd: string, output: OutputChannel): Promise<number> {
+export type CommandResult = {
+  code: number;
+  output: string;
+};
+
+export function runCommand(command: string, cwd: string, output: OutputChannel): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     output.appendLine(`> ${command}`);
     const child = spawn(command, { cwd, shell: true, env: process.env });
+    let buffer = '';
 
-    child.stdout.on('data', (data) => output.appendLine(data.toString()));
-    child.stderr.on('data', (data) => output.appendLine(data.toString()));
+    child.stdout.on('data', (data) => {
+      const text = data.toString();
+      buffer += text;
+      output.appendLine(text);
+    });
+    child.stderr.on('data', (data) => {
+      const text = data.toString();
+      buffer += text;
+      output.appendLine(text);
+    });
     child.on('error', (error) => reject(error));
-    child.on('close', (code) => resolve(code ?? 0));
+    child.on('close', (code) => resolve({ code: code ?? 0, output: buffer }));
   });
 }
 
