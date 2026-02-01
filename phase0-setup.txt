@@ -1,0 +1,104 @@
+Forge Phase 0 Setup (Windows + Docker Desktop + vLLM)
+
+Overview
+- Runs an on-prem LLM server using vLLM (OpenAI-compatible API).
+- Uses a quantized 32B model that fits in 32 GB VRAM.
+
+Prereqs
+1) Docker Desktop installed
+2) Docker Desktop settings:
+   - General -> Use the WSL 2 based engine (ON)
+3) NVIDIA GPU drivers installed (GPU must appear in nvidia-smi)
+4) PowerShell (commands below are PowerShell)
+
+Step 1: Verify GPU passthrough
+Run once to confirm Docker can see the GPU:
+  docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+
+You should see your RTX 5090 listed.
+
+Step 2: (Optional) Set HF token
+Only needed if the model is gated on Hugging Face.
+  $env:HUGGING_FACE_HUB_TOKEN="<HF_TOKEN>"
+
+Step 3: Start vLLM (detached container)
+This uses the AWQ quantized 32B model and Marlin kernels for speed.
+
+Create and start the container (first time):
+  docker run --name forge-vllm -d --gpus all `
+    -v $env:USERPROFILE\.cache\huggingface:/root/.cache/huggingface `
+    -e HUGGING_FACE_HUB_TOKEN=$env:HUGGING_FACE_HUB_TOKEN `
+    -p 8000:8000 `
+    --ipc=host `
+    vllm/vllm-openai:latest `
+    Qwen/Qwen2.5-Coder-32B-Instruct-AWQ `
+    --quantization awq_marlin `
+    --dtype auto `
+    --max-model-len 8192 `
+    --gpu-memory-utilization 0.85
+
+Notes:
+- The vLLM Docker image already runs "vllm serve" as its entrypoint.
+- Do NOT prepend "vllm serve" in the command.
+
+Step 4: Wait for the server to be ready
+Tail logs until you see "Uvicorn running".
+  docker logs -f forge-vllm
+
+Expected line:
+  Uvicorn running on http://0.0.0.0:8000
+
+Step 5: Verify the API is up
+  Invoke-RestMethod http://127.0.0.1:8000/v1/models
+
+Step 6: Send a test prompt
+  curl http://127.0.0.1:8000/v1/chat/completions `
+    -H "Content-Type: application/json" `
+    -d '{"model":"Qwen/Qwen2.5-Coder-32B-Instruct-AWQ","messages":[{"role":"user","content":"Say hello"}]}'
+
+If you require an API key, add:
+  -H "Authorization: Bearer <API_KEY>"
+
+Step 7: Configure Forge in VS Code
+Open VS Code Settings:
+- Press Ctrl+, (comma)
+- Or use Command Palette (Ctrl+Shift+P) and type "Preferences: Open Settings"
+
+Search for "Forge" and set:
+- forge.llmEndpoint (default: http://127.0.0.1:8000/v1)
+- forge.llmModel (default: Qwen/Qwen2.5-Coder-32B-Instruct-AWQ)
+- forge.llmApiKey (optional)
+
+These override environment variables. Env fallbacks are:
+- FORGE_LLM_ENDPOINT
+- FORGE_LLM_MODEL
+- FORGE_LLM_API_KEY
+
+Step 8: Start/Stop next time
+Start:
+  docker start forge-vllm
+
+Stop:
+  docker stop forge-vllm
+
+Check status:
+  docker ps
+
+Step 9: Update model or settings
+Stop and remove the container, then re-run the docker run command:
+  docker stop forge-vllm
+  docker rm forge-vllm
+
+Troubleshooting
+- If it fails with CUDA OOM, lower memory usage:
+  --max-model-len 4096
+  --gpu-memory-utilization 0.8
+
+- If the server never becomes ready, check logs:
+  docker logs forge-vllm --tail 200
+
+- If you see slow inference, ensure you are using:
+  --quantization awq_marlin
+
+Stop everything
+- docker stop forge-vllm

@@ -1,199 +1,167 @@
-// Node utilities for reading files and joining paths.
+// Node utilities for filesystem access and HTTP requests.
 import * as fs from 'fs';
+import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
 // VS Code extension API.
 import * as vscode from 'vscode';
 
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+
+type ChatCompletionResponse = {
+  choices?: Array<{ message?: { content?: string } }>;
+  error?: { message?: string };
+};
+
+const DEFAULT_LLM_ENDPOINT = 'http://127.0.0.1:8000/v1';
+const DEFAULT_LLM_MODEL = 'Qwen/Qwen2.5-Coder-32B-Instruct-AWQ';
+
 export function activate(context: vscode.ExtensionContext): void {
   // Output channel visible in View -> Output.
   const output = vscode.window.createOutputChannel('Forge');
-  // Register the single Forge command.
-  const command = vscode.commands.registerCommand('forge.run', () => {
-    // Workspace root folder (or null if none).
-    const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-    // Currently active editor file (or null if none).
-    const activeEditorFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
-    // Collected file list (relative to root).
-    const files: string[] = [];
-    // Resolved package.json path (if found).
-    let packageJsonPath: string | null = null;
-    // Parsed package.json content.
-    let packageJson: unknown = null;
-    // Detected package manager name.
-    let packageManager: string | null = null;
-    // Detected frontend framework name.
-    let frontendFramework: string | null = null;
-    // Detected backend framework name.
-    let backendFramework: string | null = null;
 
-    // Only scan if we have a workspace root.
-    if (rootPath) {
-      // Track any package.json files found during the scan.
-      const packageJsonCandidates: string[] = [];
-      // Limit how deep we scan.
-      const maxDepth = 2;
-      // Manual stack for depth-limited traversal.
-      const stack: Array<{ dir: string; depth: number }> = [{ dir: rootPath, depth: 0 }];
-      while (stack.length > 0) {
-        const current = stack.pop();
-        if (!current) {
-          break;
-        }
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(current.dir, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const entry of entries) {
-          // Skip large or irrelevant folders.
-          if (entry.name === 'node_modules' || entry.name === '.git') {
-            continue;
-          }
-          const fullPath = path.join(current.dir, entry.name);
-          if (entry.isDirectory()) {
-            if (current.depth < maxDepth) {
-              stack.push({ dir: fullPath, depth: current.depth + 1 });
-            }
-          } else {
-            // Store relative file path.
-            files.push(path.relative(rootPath, fullPath));
-            // Track package.json files for later selection.
-            if (entry.name === 'package.json') {
-              packageJsonCandidates.push(fullPath);
-            }
-          }
-        }
-      }
-
-      // Prefer a package.json near the active editor file.
-      if (activeEditorFile) {
-        const activeRelative = path.relative(rootPath, activeEditorFile);
-        const activeInWorkspace = !activeRelative.startsWith('..') && !path.isAbsolute(activeRelative);
-        if (activeInWorkspace) {
-          let dir = path.dirname(activeEditorFile);
-          while (true) {
-            const candidate = path.join(dir, 'package.json');
-            if (fs.existsSync(candidate)) {
-              packageJsonPath = candidate;
-              break;
-            }
-            if (dir === rootPath) {
-              break;
-            }
-            const parent = path.dirname(dir);
-            if (parent === dir) {
-              break;
-            }
-            dir = parent;
-          }
-        }
-      }
-
-      // Fallback to a root package.json if present.
-      if (!packageJsonPath) {
-        const rootPackageJsonPath = path.join(rootPath, 'package.json');
-        if (fs.existsSync(rootPackageJsonPath)) {
-          packageJsonPath = rootPackageJsonPath;
-        }
-      }
-
-      // If exactly one package.json was found, use it.
-      if (!packageJsonPath && packageJsonCandidates.length === 1) {
-        packageJsonPath = packageJsonCandidates[0];
-      }
-
-      // Safely parse package.json content.
-      if (packageJsonPath) {
-        try {
-          const raw = fs.readFileSync(packageJsonPath, 'utf8');
-          packageJson = JSON.parse(raw) as unknown;
-        } catch {
-          packageJson = null;
-        }
-      }
-
-      // Detect package manager and frameworks from dependencies.
-      if (packageJson && typeof packageJson === 'object') {
-        const pkg = packageJson as {
-          dependencies?: Record<string, string>;
-          devDependencies?: Record<string, string>;
-          packageManager?: string;
-        };
-        const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
-
-        // Use packageManager field if present.
-        if (typeof pkg.packageManager === 'string') {
-          packageManager = pkg.packageManager.split('@')[0] ?? null;
-        }
-        // Otherwise, infer from lockfiles near package.json.
-        if (!packageManager) {
-          const projectDir = packageJsonPath ? path.dirname(packageJsonPath) : rootPath;
-          if (fs.existsSync(path.join(projectDir, 'pnpm-lock.yaml'))) {
-            packageManager = 'pnpm';
-          } else if (fs.existsSync(path.join(projectDir, 'yarn.lock'))) {
-            packageManager = 'yarn';
-          } else if (fs.existsSync(path.join(projectDir, 'package-lock.json'))) {
-            packageManager = 'npm';
-          } else if (fs.existsSync(path.join(projectDir, 'bun.lockb')) || fs.existsSync(path.join(projectDir, 'bun.lock'))) {
-            packageManager = 'bun';
-          }
-        }
-
-        // Basic frontend framework detection.
-        if ('next' in deps) {
-          frontendFramework = 'next';
-        } else if ('react' in deps) {
-          frontendFramework = 'react';
-        } else if ('vue' in deps) {
-          frontendFramework = 'vue';
-        } else if ('nuxt' in deps) {
-          frontendFramework = 'nuxt';
-        } else if ('@angular/core' in deps) {
-          frontendFramework = 'angular';
-        } else if ('svelte' in deps) {
-          frontendFramework = 'svelte';
-        } else if ('solid-js' in deps) {
-          frontendFramework = 'solid';
-        } else if ('astro' in deps) {
-          frontendFramework = 'astro';
-        }
-
-        // Basic backend framework detection.
-        if ('@nestjs/core' in deps) {
-          backendFramework = 'nestjs';
-        } else if ('express' in deps) {
-          backendFramework = 'express';
-        } else if ('fastify' in deps) {
-          backendFramework = 'fastify';
-        } else if ('koa' in deps) {
-          backendFramework = 'koa';
-        } else if ('@hapi/hapi' in deps) {
-          backendFramework = 'hapi';
-        } else if ('hono' in deps) {
-          backendFramework = 'hono';
-        }
-      }
-    }
-
-    // Structured context object for logging.
-    const contextObject = {
-      workspaceRoot: rootPath,
-      activeEditorFile,
-      files,
-      packageJson,
-      packageManager,
-      frontendFramework,
-      backendFramework
-    };
-
-    // Write context to the Output panel.
+  // Register the Forge command.
+  const command = vscode.commands.registerCommand('forge.run', async () => {
     output.clear();
-    output.appendLine(JSON.stringify(contextObject, null, 2));
     output.show(true);
 
-    // Show a short confirmation toast.
-    void vscode.window.showInformationMessage('Forge context captured');
+    // Ensure we have an active editor file to target.
+    const activeEditor = vscode.window.activeTextEditor;
+    if (!activeEditor) {
+      void vscode.window.showErrorMessage('Forge: Open a file to edit first.');
+      return;
+    }
+
+    const activeFilePath = activeEditor.document.uri.fsPath;
+    const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const relativePath = rootPath ? path.relative(rootPath, activeFilePath) : path.basename(activeFilePath);
+
+    // Ask the user for the instruction.
+    const instruction = await vscode.window.showInputBox({
+      prompt: 'What should Forge do in the active file?',
+      placeHolder: 'e.g., Add a create order button'
+    });
+
+    if (!instruction) {
+      void vscode.window.showInformationMessage('Forge: No instruction provided.');
+      return;
+    }
+
+    // Confirm the target file with the user.
+    const confirmTarget = await vscode.window.showWarningMessage(
+      `Forge will edit: ${relativePath}. Continue?`,
+      'Continue',
+      'Cancel'
+    );
+
+    if (confirmTarget !== 'Continue') {
+      void vscode.window.showInformationMessage('Forge: Cancelled.');
+      return;
+    }
+
+    // Read the current file content.
+    let originalContent: string;
+    try {
+      originalContent = fs.readFileSync(activeFilePath, 'utf8');
+    } catch (error) {
+      output.appendLine(`Error reading file: ${String(error)}`);
+      void vscode.window.showErrorMessage('Forge: Failed to read the active file.');
+      return;
+    }
+
+    output.appendLine('Requesting diff from the local LLM...');
+
+    // Build the LLM prompt for a unified diff.
+    const messages: ChatMessage[] = [
+      {
+        role: 'system',
+        content:
+          'You are a coding assistant. Return ONLY a unified diff for the target file. ' +
+          'Do not include explanations, code fences, or extra text. ' +
+          'The diff must apply cleanly and only change the target file.'
+      },
+      {
+        role: 'user',
+        content:
+          `Instruction: ${instruction}\n` +
+          `Target file: ${relativePath}\n` +
+          'Current file content:\n' +
+          '---\n' +
+          `${originalContent}\n` +
+          '---\n' +
+          'Return a unified diff for the target file only.'
+      }
+    ];
+
+    // Call the LLM server.
+    const config = vscode.workspace.getConfiguration('forge');
+    const endpoint = config.get<string>('llmEndpoint') ?? process.env.FORGE_LLM_ENDPOINT ?? DEFAULT_LLM_ENDPOINT;
+    const model = config.get<string>('llmModel') ?? process.env.FORGE_LLM_MODEL ?? DEFAULT_LLM_MODEL;
+    const apiKeySetting = config.get<string>('llmApiKey');
+    const apiKey = apiKeySetting && apiKeySetting.trim().length > 0 ? apiKeySetting : process.env.FORGE_LLM_API_KEY;
+
+    let diffText: string;
+    try {
+      const response = await callChatCompletion(endpoint, model, messages, apiKey);
+      diffText = extractUnifiedDiff(response);
+    } catch (error) {
+      output.appendLine(`LLM error: ${String(error)}`);
+      void vscode.window.showErrorMessage('Forge: LLM request failed.');
+      return;
+    }
+
+    output.appendLine('Validating diff...');
+
+    try {
+      validateSingleFileDiff(diffText, relativePath);
+    } catch (error) {
+      output.appendLine(`Diff validation failed: ${String(error)}`);
+      void vscode.window.showErrorMessage('Forge: Diff validation failed.');
+      return;
+    }
+
+    let updatedContent: string;
+    try {
+      updatedContent = applyUnifiedDiff(originalContent, diffText);
+    } catch (error) {
+      output.appendLine(`Diff apply failed: ${String(error)}`);
+      void vscode.window.showErrorMessage('Forge: Failed to apply the diff.');
+      return;
+    }
+
+    // Show a diff view to the user.
+    try {
+      const originalUri = vscode.Uri.file(activeFilePath);
+      const updatedDoc = await vscode.workspace.openTextDocument({ content: updatedContent });
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        originalUri,
+        updatedDoc.uri,
+        `Forge: Proposed Changes (${relativePath})`
+      );
+    } catch (error) {
+      output.appendLine(`Diff view error: ${String(error)}`);
+    }
+
+    // Ask for approval before writing changes.
+    const confirmApply = await vscode.window.showWarningMessage(
+      'Apply the proposed changes to the file?',
+      'Apply',
+      'Cancel'
+    );
+
+    if (confirmApply !== 'Apply') {
+      void vscode.window.showInformationMessage('Forge: Changes not applied.');
+      return;
+    }
+
+    try {
+      fs.writeFileSync(activeFilePath, updatedContent, 'utf8');
+      void vscode.window.showInformationMessage('Forge: Changes applied.');
+    } catch (error) {
+      output.appendLine(`Write error: ${String(error)}`);
+      void vscode.window.showErrorMessage('Forge: Failed to write the file.');
+    }
   });
 
   // Dispose command when the extension deactivates.
@@ -201,3 +169,192 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
+
+async function callChatCompletion(
+  endpoint: string,
+  model: string,
+  messages: ChatMessage[],
+  apiKey?: string
+): Promise<ChatCompletionResponse> {
+  const url = new URL(endpoint.replace(/\/$/, '') + '/chat/completions');
+  const body = JSON.stringify({
+    model,
+    messages,
+    temperature: 0,
+    stream: false
+  });
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body).toString()
+  };
+
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  const isHttps = url.protocol === 'https:';
+  const requestOptions: http.RequestOptions = {
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port,
+    path: url.pathname,
+    headers
+  };
+
+  const requester = isHttps ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = requester.request(requestOptions, (res) => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode}: ${data}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(data) as ChatCompletionResponse);
+        } catch (error) {
+          reject(new Error(`Invalid JSON response: ${String(error)}`));
+        }
+      });
+    });
+
+    req.on('error', (error) => reject(error));
+    req.write(body);
+    req.end();
+  });
+}
+
+function extractUnifiedDiff(response: ChatCompletionResponse): string {
+  const content = response.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    const errorMessage = response.error?.message ?? 'No content returned by LLM.';
+    throw new Error(errorMessage);
+  }
+
+  const fenced = content.match(/```(?:diff)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1].trim() : content;
+
+  if (!raw.includes('--- ') || !raw.includes('+++ ')) {
+    throw new Error('LLM output does not contain a unified diff.');
+  }
+
+  return raw;
+}
+
+function normalizeDiffPath(diffPath: string): string {
+  const cleaned = diffPath.replace(/^a\//, '').replace(/^b\//, '').replace(/^"|"$/g, '');
+  return cleaned.replace(/\\/g, '/');
+}
+
+function matchesTarget(diffPath: string, target: string): boolean {
+  const normalizedDiff = normalizeDiffPath(diffPath);
+  const normalizedTarget = target.replace(/\\/g, '/');
+  return normalizedDiff === normalizedTarget || normalizedDiff.endsWith(`/${normalizedTarget}`);
+}
+
+function validateSingleFileDiff(diffText: string, targetPath: string): void {
+  const lines = diffText.split(/\r?\n/);
+  const fileHeaders = lines.filter((line) => line.startsWith('--- '));
+  if (fileHeaders.length !== 1) {
+    throw new Error('Diff must contain exactly one file header.');
+  }
+
+  const oldLineIndex = lines.findIndex((line) => line.startsWith('--- '));
+  const newLineIndex = lines.findIndex((line) => line.startsWith('+++ '));
+
+  if (oldLineIndex === -1 || newLineIndex === -1 || newLineIndex <= oldLineIndex) {
+    throw new Error('Diff headers are missing or out of order.');
+  }
+
+  const oldPath = lines[oldLineIndex].slice(4).trim();
+  const newPath = lines[newLineIndex].slice(4).trim();
+
+  if (oldPath === '/dev/null' || newPath === '/dev/null') {
+    throw new Error('Diff must modify an existing file (no create/delete).');
+  }
+
+  if (!matchesTarget(oldPath, targetPath) || !matchesTarget(newPath, targetPath)) {
+    throw new Error('Diff file path does not match the active file.');
+  }
+
+  const hasHunk = lines.some((line) => line.startsWith('@@ '));
+  if (!hasHunk) {
+    throw new Error('Diff contains no hunks.');
+  }
+
+  const extraHeaders = lines.filter((line, index) => index > newLineIndex && line.startsWith('--- '));
+  if (extraHeaders.length > 0) {
+    throw new Error('Diff contains multiple files.');
+  }
+}
+
+function applyUnifiedDiff(originalText: string, diffText: string): string {
+  const originalLines = originalText.replace(/\r\n/g, '\n').split('\n');
+  const diffLines = diffText.replace(/\r\n/g, '\n').split('\n');
+
+  const result: string[] = [];
+  let originalIndex = 0;
+
+  let i = 0;
+  while (i < diffLines.length) {
+    const line = diffLines[i];
+    if (line.startsWith('@@ ')) {
+      const match = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/.exec(line);
+      if (!match) {
+        throw new Error(`Invalid hunk header: ${line}`);
+      }
+
+      const startOld = Number(match[1]);
+      const oldStartIndex = Math.max(startOld - 1, 0);
+
+      // Copy unchanged lines before the hunk.
+      while (originalIndex < oldStartIndex && originalIndex < originalLines.length) {
+        result.push(originalLines[originalIndex]);
+        originalIndex += 1;
+      }
+
+      i += 1;
+      // Apply hunk lines.
+      while (i < diffLines.length && !diffLines[i].startsWith('@@ ')) {
+        const hunkLine = diffLines[i];
+        if (hunkLine.startsWith(' ')) {
+          const content = hunkLine.slice(1);
+          if (originalLines[originalIndex] !== content) {
+            throw new Error('Context line mismatch while applying diff.');
+          }
+          result.push(content);
+          originalIndex += 1;
+        } else if (hunkLine.startsWith('-')) {
+          const content = hunkLine.slice(1);
+          if (originalLines[originalIndex] !== content) {
+            throw new Error('Removal line mismatch while applying diff.');
+          }
+          originalIndex += 1;
+        } else if (hunkLine.startsWith('+')) {
+          result.push(hunkLine.slice(1));
+        } else if (hunkLine.startsWith('\\')) {
+          // Ignore "No newline at end of file" markers.
+        } else {
+          throw new Error(`Unexpected diff line: ${hunkLine}`);
+        }
+        i += 1;
+      }
+      continue;
+    }
+    i += 1;
+  }
+
+  // Append remaining original lines after the last hunk.
+  while (originalIndex < originalLines.length) {
+    result.push(originalLines[originalIndex]);
+    originalIndex += 1;
+  }
+
+  return result.join('\n');
+}

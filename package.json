@@ -20,7 +20,27 @@
         "command": "forge.run",
         "title": "Forge: Run"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Forge",
+      "properties": {
+        "forge.llmEndpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000/v1",
+          "description": "Base URL for the local LLM server (OpenAI-compatible)."
+        },
+        "forge.llmModel": {
+          "type": "string",
+          "default": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
+          "description": "Model name to send in chat completion requests."
+        },
+        "forge.llmApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key for the local LLM server."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
