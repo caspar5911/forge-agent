@@ -1,0 +1,347 @@
+import * as vscode from 'vscode';
+import { harvestContext, type ProjectContext } from '../context';
+import type { ChatMessage } from '../llm/client';
+import { callChatCompletion } from '../llm/client';
+import { extractJsonObject } from './json';
+import { logOutput, logVerbose } from './logging';
+import { listWorkspaceFiles } from './workspaceFiles';
+import type { ChatHistoryItem, Intent } from './types';
+import type { ForgeUiApi } from '../ui/api';
+
+type DisambiguationOption = { label: string; instruction: string };
+
+let pendingDisambiguation: DisambiguationOption[] | null = null;
+
+export function getPendingDisambiguation(): DisambiguationOption[] | null {
+  return pendingDisambiguation;
+}
+
+export function clearPendingDisambiguation(): void {
+  pendingDisambiguation = null;
+}
+
+export function mergeChatHistory(history: ChatHistoryItem[] | undefined, messages: ChatMessage[]): ChatMessage[] {
+  if (!history || history.length === 0) {
+    return messages;
+  }
+  const config = vscode.workspace.getConfiguration('forge');
+  const maxMessages = Math.max(0, config.get<number>('chatHistoryMaxMessages') ?? 8);
+  const maxChars = Math.max(0, config.get<number>('chatHistoryMaxChars') ?? 8000);
+
+  const filtered = history.filter((item) => item && item.content && item.content.trim().length > 0);
+  const tail = maxMessages > 0 ? filtered.slice(-maxMessages) : [];
+
+  const trimmed: ChatMessage[] = [];
+  let used = 0;
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    const item = tail[i];
+    const content = item.content.trim();
+    const next = used + content.length;
+    if (maxChars > 0 && next > maxChars) {
+      continue;
+    }
+    trimmed.unshift({ role: item.role, content });
+    used = next;
+  }
+
+  return trimmed.concat(messages);
+}
+
+export async function determineIntent(
+  instruction: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal,
+  history?: ChatHistoryItem[]
+): Promise<Intent> {
+  const config = vscode.workspace.getConfiguration('forge');
+  const useLlm = config.get<boolean>('intentUseLLM') === true;
+  if (!useLlm) {
+    return classifyIntent(instruction);
+  }
+
+  const messages = buildIntentMessages(instruction);
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response);
+    const intent = String(payload.intent ?? '').toLowerCase();
+    if (intent === 'edit' || intent === 'question' || intent === 'fix') {
+      return intent;
+    }
+  } catch (error) {
+    logVerbose(output, panelApi, `Intent LLM error: ${String(error)}`);
+  }
+
+  return classifyIntent(instruction);
+}
+
+export function classifyIntent(instruction: string): Intent {
+  const trimmed = instruction.trim();
+  const lowered = trimmed.toLowerCase();
+  if (isCasualChatPrompt(lowered)) {
+    return 'question';
+  }
+  if (/(resolve|fix|repair).*(error|errors|failing|failure|tests|test|build|lint|typecheck)/.test(lowered)) {
+    return 'fix';
+  }
+  if (/(add|update|change|fix|refactor|remove|delete|create|implement|comment|comments|document)\b/.test(lowered)) {
+    return 'edit';
+  }
+  if (trimmed.endsWith('?')) {
+    return 'question';
+  }
+  if (/(^|\s)(how|what|why|where|when|which|who)\b/.test(lowered)) {
+    return 'question';
+  }
+  if (/^(show|list|count)\b/.test(lowered)) {
+    return 'question';
+  }
+  if (/^(check|inspect|review|summarize|summary|describe)\b/.test(lowered)) {
+    return 'question';
+  }
+  if (lowered.includes('in points') || lowered.includes('point form')) {
+    return 'question';
+  }
+  return 'edit';
+}
+
+export function isCasualChatPrompt(lowered: string): boolean {
+  if (lowered.length === 0) {
+    return true;
+  }
+  if (lowered.length <= 12 && !/\b(add|edit|fix|update|create|remove|delete)\b/.test(lowered)) {
+    return true;
+  }
+  if (/\b(my name is|my friend|i am|i'm|hello|hi|hey|thanks|thank you)\b/.test(lowered)) {
+    return true;
+  }
+  if (!/[\/\\]/.test(lowered) && !/\b(file|files|component|module|class|function|code)\b/.test(lowered)) {
+    if (!/\b(add|edit|fix|update|create|remove|delete|implement|refactor|rename)\b/.test(lowered)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isFileReadQuestion(lowered: string): boolean {
+  if (/\b(show|open|read|view|display)\b/.test(lowered)) {
+    return /\bfile|files|content\b/.test(lowered) || /[a-z0-9_-]+\.(ts|tsx|js|jsx|json|md|css|html)\b/.test(lowered);
+  }
+  return /\bwhat is in\b/.test(lowered);
+}
+
+export function buildDefaultAssumptions(
+  clarification: string[],
+  activeRelativePath: string | null
+): string[] {
+  const assumptions: string[] = [];
+  const joined = clarification.join(' ').toLowerCase();
+  if (joined.includes('file')) {
+    if (activeRelativePath) {
+      assumptions.push(`Apply changes to the active file (${activeRelativePath}).`);
+    } else {
+      assumptions.push('Apply changes to the most relevant files based on the prompt.');
+    }
+  }
+
+  if (joined.includes('style')) {
+    assumptions.push('Follow the existing code style in the file.');
+  }
+
+  if (joined.includes('comments')) {
+    assumptions.push('Add concise comments only where logic is non-obvious.');
+  }
+
+  if (assumptions.length === 0) {
+    assumptions.push('Proceed with minimal, safe changes based on the prompt.');
+  }
+
+  return assumptions;
+}
+
+export async function maybeClarifyInstruction(
+  instruction: string,
+  rootPath: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal,
+  history?: ChatHistoryItem[]
+): Promise<string[] | null> {
+  const context = harvestContext();
+  const filesList = context.files && context.files.length > 0
+    ? context.files
+    : listWorkspaceFiles(rootPath, 4, 500);
+  const messages = mergeChatHistory(
+    history,
+    buildClarificationMessages(instruction, context, filesList)
+  );
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response);
+    const kind = String(payload.kind ?? '').toLowerCase();
+    if (kind !== 'clarification') {
+      return null;
+    }
+    const questions = Array.isArray(payload.questions) ? payload.questions : [];
+    return questions
+      .map((item) => String(item))
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .slice(0, 3);
+  } catch (error) {
+    logVerbose(output, panelApi, `Clarification check error: ${String(error)}`);
+    return null;
+  }
+}
+
+function buildClarificationMessages(
+  instruction: string,
+  context: ProjectContext,
+  filesList: string[]
+): ChatMessage[] {
+  const preview = filesList.slice(0, 120).join('\n');
+  const truncated = filesList.length > 120 ? '\n...(truncated)' : '';
+  return [
+    {
+      role: 'system',
+      content:
+        'You are checking whether a coding instruction is ambiguous. ' +
+        'If it is clear, return {"kind":"proceed"}. ' +
+        'If it is ambiguous, return {"kind":"clarification","questions":[...]} with 1-3 short questions. ' +
+        'Return ONLY valid JSON.'
+    },
+    {
+      role: 'user',
+      content:
+        `Instruction: ${instruction}\n\n` +
+        'Project context:\n' +
+        `${JSON.stringify(
+          {
+            workspaceRoot: context.workspaceRoot,
+            activeEditorFile: context.activeEditorFile,
+            packageManager: context.packageManager,
+            frontendFramework: context.frontendFramework,
+            backendFramework: context.backendFramework
+          },
+          null,
+          2
+        )}\n\n` +
+        'Files (partial list):\n' +
+        preview +
+        truncated
+    }
+  ];
+}
+
+export async function maybePickDisambiguation(
+  instruction: string,
+  rootPath: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal
+): Promise<string | null> {
+  const context = harvestContext();
+  const filesList = context.files && context.files.length > 0
+    ? context.files
+    : listWorkspaceFiles(rootPath, 3, 200);
+  const messages = buildDisambiguationOptionsMessages(instruction, context, filesList);
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response);
+    const options = Array.isArray(payload.options) ? payload.options : [];
+    const mapped = options
+      .map((option) => {
+        if (option && typeof option === 'object') {
+          const obj = option as { label?: unknown; instruction?: unknown };
+          return {
+            label: String(obj.label ?? ''),
+            detail: typeof obj.instruction === 'string' ? obj.instruction : undefined
+          };
+        }
+        return { label: String(option), detail: undefined };
+      })
+      .filter((option) => option.label.length > 0)
+      .slice(0, 4);
+    if (mapped.length === 0) {
+      return null;
+    }
+    const numbered = mapped.map((item, index) => ({
+      label: `${index + 1}. ${item.label}`,
+      instruction: item.detail ?? item.label
+    }));
+    pendingDisambiguation = numbered.map((item) => ({
+      label: item.label,
+      instruction: item.instruction
+    }));
+    logOutput(output, panelApi, 'Pick one option by replying with its number:');
+    numbered.forEach((item) => logOutput(output, panelApi, item.label));
+    return null;
+  } catch (error) {
+    logVerbose(output, panelApi, `Disambiguation error: ${String(error)}`);
+    return null;
+  }
+}
+
+export function parseDisambiguationPick(input: string, max: number): number | null {
+  const trimmed = input.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const index = Number(trimmed);
+  if (Number.isNaN(index) || index < 1 || index > max) {
+    return null;
+  }
+  return index - 1;
+}
+
+function buildDisambiguationOptionsMessages(
+  instruction: string,
+  context: ProjectContext,
+  filesList: string[]
+): ChatMessage[] {
+  const preview = filesList.slice(0, 80).join('\n');
+  const truncated = filesList.length > 80 ? '\n...(truncated)' : '';
+  return [
+    {
+      role: 'system',
+      content:
+        'Propose 2-4 possible interpretations of the instruction as short options. ' +
+        'Return ONLY valid JSON: {"options":[{"label":"...","instruction":"..."}]}.'
+    },
+    {
+      role: 'user',
+      content:
+        `Instruction: ${instruction}\n\n` +
+        'Project context:\n' +
+        `${JSON.stringify(
+          {
+            workspaceRoot: context.workspaceRoot,
+            activeEditorFile: context.activeEditorFile,
+            packageManager: context.packageManager,
+            frontendFramework: context.frontendFramework,
+            backendFramework: context.backendFramework
+          },
+          null,
+          2
+        )}\n\n` +
+        'Files (partial list):\n' +
+        preview +
+        truncated
+    }
+  ];
+}
+
+function buildIntentMessages(instruction: string): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'Classify the user intent into one of: edit, question, fix. ' +
+        'Return ONLY valid JSON in the form {"intent":"edit|question|fix","confidence":0-1}.'
+    },
+    {
+      role: 'user',
+      content: instruction
+    }
+  ];
+}
