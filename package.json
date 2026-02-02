@@ -165,6 +165,25 @@
           "type": "boolean",
           "default": true,
           "description": "Use the LLM to classify prompt intent (edit/question/fix)."
+        },
+        "forge.clarifyBeforeEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask clarifying questions before editing when the prompt is ambiguous."
+        },
+        "forge.clarifyOnlyIf": {
+          "type": "string",
+          "enum": [
+            "always",
+            "very-unclear"
+          ],
+          "default": "very-unclear",
+          "description": "When to block for clarification: always, or only if the prompt is very unclear."
+        },
+        "forge.clarifyAutoAssume": {
+          "type": "boolean",
+          "default": true,
+          "description": "If clarification is required, proceed by applying safe default assumptions instead of stopping."
         }
       }
     }

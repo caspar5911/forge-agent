@@ -21,6 +21,7 @@ let viewProviderInstance: ForgeViewProvider | null = null;
 let lastManualSelection: string[] = [];
 let runTimer: NodeJS.Timeout | null = null;
 let keepAliveTimer: NodeJS.Timeout | null = null;
+let pendingDisambiguation: Array<{ label: string; instruction: string }> | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
   // Output channel visible in View -> Output.
@@ -164,6 +165,16 @@ async function runForge(
 
   const config = vscode.workspace.getConfiguration('forge');
   const enableMultiFile = config.get<boolean>('enableMultiFile') === true;
+  if (pendingDisambiguation) {
+    const pick = parseDisambiguationPick(instruction, pendingDisambiguation.length);
+    if (pick !== null) {
+      const chosen = pendingDisambiguation[pick];
+      pendingDisambiguation = null;
+      instruction = chosen.instruction;
+      logOutput(output, panelApi, `Selected option ${pick + 1}: ${chosen.label}`);
+    }
+  }
+
   const intent = await determineIntent(instruction, output, panelApi, signal, history);
 
   const activeEditor = vscode.window.activeTextEditor;
@@ -195,6 +206,54 @@ async function runForge(
     await runValidationFirstFix(rootPath, instruction, output, panelApi, signal, history);
     setStatus('Done');
     return;
+  }
+
+  const clarifyFirst = config.get<boolean>('clarifyBeforeEdit') !== false;
+  if (clarifyFirst) {
+    const clarification = await maybeClarifyInstruction(
+      instruction,
+      rootPath,
+      output,
+      panelApi,
+      signal,
+      history
+    );
+    if (clarification && clarification.length > 0) {
+      const gate = config.get<string>('clarifyOnlyIf') ?? 'very-unclear';
+      const shouldBlock =
+        gate === 'always' || (gate === 'very-unclear' && clarification.length >= 2);
+      if (shouldBlock) {
+        const autoAssume = config.get<boolean>('clarifyAutoAssume') === true;
+        if (gate === 'very-unclear') {
+        const picked = await maybePickDisambiguation(
+          instruction,
+          rootPath,
+          output,
+          panelApi,
+          signal
+        );
+        if (picked) {
+          instruction = `${instruction}\n\nClarified intent:\n${picked}`;
+        } else if (!autoAssume) {
+          logOutput(output, panelApi, 'Need clarification before editing:');
+          clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
+          setStatus('Waiting for clarification');
+          return;
+        }
+        }
+        if (autoAssume) {
+          const assumptions = buildDefaultAssumptions(clarification, relativePath);
+          logOutput(output, panelApi, 'Ambiguous prompt detected. Proceeding with assumptions:');
+          assumptions.forEach((line) => logOutput(output, panelApi, `- ${line}`));
+          instruction = `${instruction}\n\nAssumptions:\n${assumptions.map((line) => `- ${line}`).join('\n')}`;
+        } else if (gate === 'always') {
+          logOutput(output, panelApi, 'Need clarification before editing:');
+          clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
+          setStatus('Waiting for clarification');
+          return;
+        }
+      }
+    }
   }
 
   if (!enableMultiFile && (!activeFilePath || !relativePath)) {
@@ -1125,6 +1184,178 @@ function buildIntentMessages(instruction: string): ChatMessage[] {
   ];
 }
 
+async function maybeClarifyInstruction(
+  instruction: string,
+  rootPath: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal,
+  history?: ChatHistoryItem[]
+): Promise<string[] | null> {
+  const context = harvestContext();
+  const filesList = context.files && context.files.length > 0
+    ? context.files
+    : listWorkspaceFiles(rootPath, 4, 500);
+  const messages = mergeChatHistory(
+    history,
+    buildClarificationMessages(instruction, context, filesList)
+  );
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response);
+    const kind = String(payload.kind ?? '').toLowerCase();
+    if (kind !== 'clarification') {
+      return null;
+    }
+    const questions = Array.isArray(payload.questions) ? payload.questions : [];
+    return questions
+      .map((item) => String(item))
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .slice(0, 3);
+  } catch (error) {
+    logVerbose(output, panelApi, `Clarification check error: ${String(error)}`);
+    return null;
+  }
+}
+
+function buildClarificationMessages(
+  instruction: string,
+  context: ProjectContext,
+  filesList: string[]
+): ChatMessage[] {
+  const preview = filesList.slice(0, 120).join('\n');
+  const truncated = filesList.length > 120 ? '\n...(truncated)' : '';
+  return [
+    {
+      role: 'system',
+      content:
+        'You are checking whether a coding instruction is ambiguous. ' +
+        'If it is clear, return {"kind":"proceed"}. ' +
+        'If it is ambiguous, return {"kind":"clarification","questions":[...]} with 1-3 short questions. ' +
+        'Return ONLY valid JSON.'
+    },
+    {
+      role: 'user',
+      content:
+        `Instruction: ${instruction}\n\n` +
+        'Project context:\n' +
+        `${JSON.stringify(
+          {
+            workspaceRoot: context.workspaceRoot,
+            activeEditorFile: context.activeEditorFile,
+            packageManager: context.packageManager,
+            frontendFramework: context.frontendFramework,
+            backendFramework: context.backendFramework
+          },
+          null,
+          2
+        )}\n\n` +
+        'Files (partial list):\n' +
+        preview +
+        truncated
+    }
+  ];
+}
+
+async function maybePickDisambiguation(
+  instruction: string,
+  rootPath: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal
+): Promise<string | null> {
+  const context = harvestContext();
+  const filesList = context.files && context.files.length > 0
+    ? context.files
+    : listWorkspaceFiles(rootPath, 3, 200);
+  const messages = buildDisambiguationOptionsMessages(instruction, context, filesList);
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response);
+    const options = Array.isArray(payload.options) ? payload.options : [];
+    const mapped = options
+      .map((option) => {
+        if (option && typeof option === 'object') {
+          const obj = option as { label?: unknown; instruction?: unknown };
+          return {
+            label: String(obj.label ?? ''),
+            detail: typeof obj.instruction === 'string' ? obj.instruction : undefined
+          };
+        }
+        return { label: String(option), detail: undefined };
+      })
+      .filter((option) => option.label.length > 0)
+      .slice(0, 4);
+    if (mapped.length === 0) {
+      return null;
+    }
+    const numbered = mapped.map((item, index) => ({
+      label: `${index + 1}. ${item.label}`,
+      instruction: item.detail ?? item.label
+    }));
+    pendingDisambiguation = numbered.map((item) => ({
+      label: item.label,
+      instruction: item.instruction
+    }));
+    logOutput(output, panelApi, 'Pick one option by replying with its number:');
+    numbered.forEach((item) => logOutput(output, panelApi, item.label));
+    return null;
+  } catch (error) {
+    logVerbose(output, panelApi, `Disambiguation error: ${String(error)}`);
+    return null;
+  }
+}
+
+function parseDisambiguationPick(input: string, max: number): number | null {
+  const trimmed = input.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const index = Number(trimmed);
+  if (Number.isNaN(index) || index < 1 || index > max) {
+    return null;
+  }
+  return index - 1;
+}
+
+function buildDisambiguationOptionsMessages(
+  instruction: string,
+  context: ProjectContext,
+  filesList: string[]
+): ChatMessage[] {
+  const preview = filesList.slice(0, 80).join('\n');
+  const truncated = filesList.length > 80 ? '\n...(truncated)' : '';
+  return [
+    {
+      role: 'system',
+      content:
+        'Propose 2-4 possible interpretations of the instruction as short options. ' +
+        'Return ONLY valid JSON: {"options":[{"label":"...","instruction":"..."}]}.'
+    },
+    {
+      role: 'user',
+      content:
+        `Instruction: ${instruction}\n\n` +
+        'Project context:\n' +
+        `${JSON.stringify(
+          {
+            workspaceRoot: context.workspaceRoot,
+            activeEditorFile: context.activeEditorFile,
+            packageManager: context.packageManager,
+            frontendFramework: context.frontendFramework,
+            backendFramework: context.backendFramework
+          },
+          null,
+          2
+        )}\n\n` +
+        'Files (partial list):\n' +
+        preview +
+        truncated
+    }
+  ];
+}
+
 function buildMultiFileUpdateMessages(
   instruction: string,
   files: Array<{ path: string; content: string }>,
@@ -1738,6 +1969,36 @@ function isFileReadQuestion(lowered: string): boolean {
     return true;
   }
   return false;
+}
+
+function buildDefaultAssumptions(
+  questions: string[],
+  activeRelativePath: string | null
+): string[] {
+  const assumptions: string[] = [];
+  const lowerJoined = questions.join(' ').toLowerCase();
+
+  if (lowerJoined.includes('file')) {
+    if (activeRelativePath) {
+      assumptions.push(`Apply changes to the active file (${activeRelativePath}).`);
+    } else {
+      assumptions.push('Apply changes to the most relevant files based on the prompt.');
+    }
+  }
+
+  if (lowerJoined.includes('style') || lowerJoined.includes('format')) {
+    assumptions.push('Follow the existing code style in the file.');
+  }
+
+  if (lowerJoined.includes('comments')) {
+    assumptions.push('Add concise comments only where logic is non-obvious.');
+  }
+
+  if (assumptions.length === 0) {
+    assumptions.push('Proceed with minimal, safe changes based on the prompt.');
+  }
+
+  return assumptions;
 }
 
 

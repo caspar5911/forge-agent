@@ -195,6 +195,9 @@ Key settings:
 - forge.chatHistoryMaxMessages
 - forge.chatHistoryMaxChars
 - forge.intentUseLLM
+- forge.clarifyBeforeEdit
+- forge.clarifyOnlyIf
+- forge.clarifyAutoAssume
 
 Environment variables:
 - FORGE_LLM_ENDPOINT
@@ -225,7 +228,10 @@ Example settings:
   "forge.projectSummaryMaxChunks": 6,
   "forge.chatHistoryMaxMessages": 8,
   "forge.chatHistoryMaxChars": 8000,
-  "forge.intentUseLLM": true
+  "forge.intentUseLLM": true,
+  "forge.clarifyBeforeEdit": true,
+  "forge.clarifyOnlyIf": "very-unclear",
+  "forge.clarifyAutoAssume": true
 }
 ```
 
