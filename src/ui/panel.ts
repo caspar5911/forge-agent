@@ -5,7 +5,7 @@ import { getForgeHtml } from './template';
 export class ForgePanel {
   private static currentPanel: ForgePanel | undefined;
   private readonly panel: vscode.WebviewPanel;
-  private onRun?: (instruction: string) => void;
+  private onRun?: (instruction: string, history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) => void;
   private onStop?: () => void;
   private pendingSelection?: (files: string[]) => void;
 
@@ -36,7 +36,7 @@ export class ForgePanel {
     this.panel.onDidDispose(() => this.dispose());
     this.panel.webview.onDidReceiveMessage((message) => {
       if (message?.type === 'run' && typeof message.text === 'string') {
-        this.onRun?.(message.text);
+        this.onRun?.(message.text, Array.isArray(message.history) ? message.history : undefined);
       }
       if (message?.type === 'stop') {
         this.onStop?.();
@@ -53,7 +53,7 @@ export class ForgePanel {
     this.panel.webview.html = getForgeHtml(this.panel.webview);
   }
 
-  setHandler(handler: (instruction: string) => void): void {
+  setHandler(handler: (instruction: string, history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) => void): void {
     this.onRun = handler;
   }
 

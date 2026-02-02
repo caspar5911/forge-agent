@@ -61,8 +61,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const api = panel.getApi();
     panelApi = api;
     api.setStatus('Idle');
-    panel.setHandler((instruction) => {
-      void runForge(instruction, output, api);
+    panel.setHandler((instruction, history) => {
+      void runForge(instruction, output, api, history);
     });
     panel.setStopHandler(() => {
       cancelActiveRun(api, output);
@@ -76,8 +76,8 @@ export function activate(context: vscode.ExtensionContext): void {
     ForgeViewProvider.viewType,
     viewProvider
   );
-  viewProvider.setHandler((instruction) => {
-    void runForge(instruction, output, viewProvider.getApi());
+  viewProvider.setHandler((instruction, history) => {
+    void runForge(instruction, output, viewProvider.getApi(), history);
   });
   viewProvider.setStopHandler(() => {
     cancelActiveRun(viewProvider.getApi(), output);
@@ -131,7 +131,8 @@ function updateActiveFile(panelApi?: ForgeUiApi): void {
 async function runForge(
   instruction: string,
   output: vscode.OutputChannel,
-  panelApi?: ForgeUiApi
+  panelApi?: ForgeUiApi,
+  history?: ChatHistoryItem[]
 ): Promise<void> {
   activeAbortController?.abort();
   activeAbortController = new AbortController();
@@ -163,7 +164,7 @@ async function runForge(
 
   const config = vscode.workspace.getConfiguration('forge');
   const enableMultiFile = config.get<boolean>('enableMultiFile') === true;
-  const intent = classifyIntent(instruction);
+  const intent = await determineIntent(instruction, output, panelApi, signal, history);
 
   const activeEditor = vscode.window.activeTextEditor;
   const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
@@ -185,13 +186,13 @@ async function runForge(
   }
 
   if (intent === 'question') {
-    await answerQuestion(instruction, rootPath, output, panelApi, signal);
+    await answerQuestion(instruction, rootPath, output, panelApi, signal, history);
     setStatus('Done');
     return;
   }
 
   if (intent === 'fix') {
-    await runValidationFirstFix(rootPath, instruction, output, panelApi, signal);
+    await runValidationFirstFix(rootPath, instruction, output, panelApi, signal, history);
     setStatus('Done');
     return;
   }
@@ -229,6 +230,7 @@ async function runForge(
       panelApi,
       panelInstance,
       viewProviderInstance,
+      history,
       undefined,
       signal
     );
@@ -292,6 +294,7 @@ async function runForge(
       instruction,
       output,
       panelApi,
+      history,
       signal
     );
 
@@ -380,6 +383,7 @@ async function runForge(
           validationResult.output,
           output,
           panelApi,
+          history,
           signal
         );
         if (!fixed) {
@@ -711,6 +715,7 @@ async function requestSingleFileUpdate(
   instruction: string,
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
+  history?: ChatHistoryItem[],
   signal?: AbortSignal
 ): Promise<FileUpdate | null> {
   let originalContent: string;
@@ -724,7 +729,10 @@ async function requestSingleFileUpdate(
 
   logVerbose(output, panelApi, 'Requesting updated file from the local LLM...');
   panelApi?.setStatus('Requesting LLM...');
-  const messages = buildFullFileMessages(instruction, relativePath, originalContent);
+  const messages = mergeChatHistory(
+    history,
+    buildFullFileMessages(instruction, relativePath, originalContent)
+  );
 
   let updatedContent: string;
   try {
@@ -760,6 +768,7 @@ async function requestMultiFileUpdate(
   panelApi?: ForgeUiApi,
   panel?: ForgePanel | null,
   viewProvider?: ForgeViewProvider | null,
+  history?: ChatHistoryItem[],
   extraContext?: string,
   signal?: AbortSignal
 ): Promise<FileUpdate[] | null> {
@@ -804,12 +813,15 @@ async function requestMultiFileUpdate(
 
   logVerbose(output, panelApi, 'Requesting file selection from the local LLM...');
   panelApi?.setStatus('Selecting files...');
-  const selectionMessages = buildFileSelectionMessages(
-    instruction,
-    filesList,
-    activeRelativePath,
-    extraContext,
-    getWorkspaceIndex()
+  const selectionMessages = mergeChatHistory(
+    history,
+    buildFileSelectionMessages(
+      instruction,
+      filesList,
+      activeRelativePath,
+      extraContext,
+      getWorkspaceIndex()
+    )
   );
 
   let selectedFiles: string[];
@@ -858,11 +870,14 @@ async function requestMultiFileUpdate(
 
   logVerbose(output, panelApi, 'Requesting updated files from the local LLM...');
   panelApi?.setStatus('Requesting LLM...');
-  const updateMessages = buildMultiFileUpdateMessages(
-    instruction,
-    filePayloads,
-    activeRelativePath,
-    extraContext
+  const updateMessages = mergeChatHistory(
+    history,
+    buildMultiFileUpdateMessages(
+      instruction,
+      filePayloads,
+      activeRelativePath,
+      extraContext
+    )
   );
 
   let updates: Array<{ path: string; content: string }>;
@@ -952,6 +967,7 @@ async function attemptAutoFix(
   validationOutput: string,
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
+  history?: ChatHistoryItem[],
   signal?: AbortSignal
 ): Promise<boolean> {
   const fixInstruction =
@@ -966,6 +982,7 @@ async function attemptAutoFix(
     panelApi,
     null,
     null,
+    history,
     validationOutput,
     signal
   );
@@ -1093,6 +1110,21 @@ function buildQuestionMessages(
   ];
 }
 
+function buildIntentMessages(instruction: string): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'Classify the user intent into one of: edit, question, fix. ' +
+        'Return ONLY valid JSON in the form {"intent":"edit|question|fix","confidence":0-1}.'
+    },
+    {
+      role: 'user',
+      content: instruction
+    }
+  ];
+}
+
 function buildMultiFileUpdateMessages(
   instruction: string,
   files: Array<{ path: string; content: string }>,
@@ -1138,6 +1170,27 @@ function extractJsonPayload(response: ChatCompletionResponse): { files?: unknown
 
   try {
     return JSON.parse(raw) as { files?: unknown };
+  } catch (error) {
+    throw new Error(`Invalid JSON from LLM: ${String(error)}`);
+  }
+}
+
+function extractJsonObject(response: ChatCompletionResponse): Record<string, unknown> {
+  const content = response.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    const errorMessage = response.error?.message ?? 'No content returned by LLM.';
+    throw new Error(errorMessage);
+  }
+
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1].trim() : content;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, unknown>;
+    }
+    throw new Error('JSON is not an object.');
   } catch (error) {
     throw new Error(`Invalid JSON from LLM: ${String(error)}`);
   }
@@ -1395,7 +1448,8 @@ async function runValidationFirstFix(
   instruction: string,
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  history?: ChatHistoryItem[]
 ): Promise<void> {
   logOutput(output, panelApi, 'Running validation (fix mode)...');
   let validationResult = await maybeRunValidation(rootPath, output);
@@ -1421,6 +1475,7 @@ async function runValidationFirstFix(
       validationResult.output,
       output,
       panelApi,
+      history,
       signal
     );
     if (!fixed) {
@@ -1564,9 +1619,69 @@ function findFileByBasename(instruction: string, filesList: string[]): string | 
 
 type Intent = 'edit' | 'question' | 'fix';
 
+type ChatHistoryItem = { role: 'user' | 'assistant' | 'system'; content: string };
+
+function mergeChatHistory(history: ChatHistoryItem[] | undefined, messages: ChatMessage[]): ChatMessage[] {
+  if (!history || history.length === 0) {
+    return messages;
+  }
+  const config = vscode.workspace.getConfiguration('forge');
+  const maxMessages = Math.max(0, config.get<number>('chatHistoryMaxMessages') ?? 8);
+  const maxChars = Math.max(0, config.get<number>('chatHistoryMaxChars') ?? 8000);
+
+  const filtered = history.filter((item) => item && item.content && item.content.trim().length > 0);
+  const tail = maxMessages > 0 ? filtered.slice(-maxMessages) : [];
+
+  const trimmed: ChatMessage[] = [];
+  let used = 0;
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    const item = tail[i];
+    const content = item.content.trim();
+    const next = used + content.length;
+    if (maxChars > 0 && next > maxChars) {
+      continue;
+    }
+    trimmed.unshift({ role: item.role, content });
+    used = next;
+  }
+
+  return trimmed.concat(messages);
+}
+
+async function determineIntent(
+  instruction: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal,
+  history?: ChatHistoryItem[]
+): Promise<Intent> {
+  const config = vscode.workspace.getConfiguration('forge');
+  const useLlm = config.get<boolean>('intentUseLLM') === true;
+  if (!useLlm) {
+    return classifyIntent(instruction);
+  }
+
+  const messages = buildIntentMessages(instruction);
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response);
+    const intent = String(payload.intent ?? '').toLowerCase();
+    if (intent === 'edit' || intent === 'question' || intent === 'fix') {
+      return intent;
+    }
+  } catch (error) {
+    logVerbose(output, panelApi, `Intent LLM error: ${String(error)}`);
+  }
+
+  return classifyIntent(instruction);
+}
+
 function classifyIntent(instruction: string): Intent {
   const trimmed = instruction.trim();
   const lowered = trimmed.toLowerCase();
+  if (isCasualChatPrompt(lowered)) {
+    return 'question';
+  }
   if (/(resolve|fix|repair).*(error|errors|failing|failure|tests|test|build|lint|typecheck)/.test(lowered)) {
     return 'fix';
   }
@@ -1591,18 +1706,139 @@ function classifyIntent(instruction: string): Intent {
   return 'edit';
 }
 
+function isCasualChatPrompt(lowered: string): boolean {
+  if (lowered.length === 0) {
+    return true;
+  }
+  if (lowered.length <= 12 && !/\b(add|edit|fix|update|create|remove|delete)\b/.test(lowered)) {
+    return true;
+  }
+  if (/\b(my name is|my friend|i am|i'm|hello|hi|hey|thanks|thank you)\b/.test(lowered)) {
+    return true;
+  }
+  if (!/[\/\\]/.test(lowered) && !/\b(file|files|component|module|class|function|code)\b/.test(lowered)) {
+    if (!/\b(add|edit|fix|update|create|remove|delete|implement|refactor|rename)\b/.test(lowered)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isFileReadQuestion(lowered: string): boolean {
+  if (/\b(show|open|read|view|display)\b/.test(lowered)) {
+    return true;
+  }
+  if (/\b(content of|contents of|what is in)\b/.test(lowered)) {
+    return true;
+  }
+  if (/\bfile\b/.test(lowered)) {
+    return true;
+  }
+  if (/\.\w{1,5}\b/.test(lowered)) {
+    return true;
+  }
+  return false;
+}
+
+
 async function answerQuestion(
   instruction: string,
   rootPath: string,
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  history?: ChatHistoryItem[]
 ): Promise<void> {
   const lowered = instruction.toLowerCase();
   const context = harvestContext();
   const filesList = context.files && context.files.length > 0
     ? context.files
     : listWorkspaceFiles(rootPath, 6, 5000);
+
+  if (isProjectSummaryQuestion(lowered)) {
+    const config = vscode.workspace.getConfiguration('forge');
+    const maxChars = config.get<number>('projectSummaryMaxChars') ?? 12000;
+    const maxFiles = config.get<number>('projectSummaryMaxFiles') ?? 60;
+    const maxBytesPerFile = config.get<number>('projectSummaryMaxFileBytes') ?? 60000;
+    const chunkChars = config.get<number>('projectSummaryChunkChars') ?? 6000;
+    const maxChunks = config.get<number>('projectSummaryMaxChunks') ?? 6;
+    const chunksResult = buildProjectSummaryChunks(rootPath, filesList, {
+      maxChars,
+      maxFiles,
+      maxBytesPerFile,
+      chunkChars,
+      maxChunks
+    });
+    if (chunksResult.chunks.length === 0) {
+      logOutput(output, panelApi, 'No readable files found for summary.');
+      return;
+    }
+    logOutput(output, panelApi, 'Summarizing project in chunks...');
+    try {
+      const partials: string[] = [];
+      for (let i = 0; i < chunksResult.chunks.length; i += 1) {
+        const chunk = chunksResult.chunks[i];
+        const messages = mergeChatHistory(
+          history,
+          buildProjectChunkMessages(chunk, i + 1, chunksResult.chunks.length)
+        );
+        const response = await callChatCompletion({}, messages, signal);
+        const content = response.choices?.[0]?.message?.content?.trim();
+        if (content) {
+          partials.push(content);
+        }
+      }
+      if (partials.length === 0) {
+        logOutput(output, panelApi, 'No summary returned.');
+        return;
+      }
+
+      const finalMessages = mergeChatHistory(
+        history,
+        buildProjectSummaryFromChunksMessages(instruction, partials)
+      );
+      if (panelApi?.appendStream) {
+        panelApi.startStream?.('assistant');
+        const answer = await callChatCompletionStream(
+          {},
+          finalMessages,
+          (delta) => panelApi.appendStream?.(delta),
+          signal
+        );
+        panelApi.endStream?.();
+        if (!answer) {
+          logOutput(output, panelApi, 'No answer returned.');
+          return;
+        }
+        if (chunksResult.truncated) {
+          logOutput(output, panelApi, 'Note: summary context was truncated to fit model limits.');
+        }
+        output.appendLine(answer);
+        return;
+      }
+
+      const response = await callChatCompletion({}, finalMessages, signal);
+      const answer = response.choices?.[0]?.message?.content?.trim();
+      if (!answer) {
+        logOutput(output, panelApi, 'No answer returned.');
+        return;
+      }
+      if (chunksResult.truncated) {
+        logOutput(output, panelApi, 'Note: summary context was truncated to fit model limits.');
+      }
+      logOutput(output, panelApi, answer);
+      return;
+    } catch (error) {
+      if (isAbortError(error)) {
+        panelApi?.endStream?.();
+        logOutput(output, panelApi, 'LLM request aborted.');
+        return;
+      }
+      panelApi?.endStream?.();
+        logOutput(output, panelApi, `LLM error: ${String(error)}`);
+        return;
+    }
+  }
 
   if (lowered.includes('how many files')) {
     const message = `This project has ${filesList.length} files (depth-limited scan).`;
@@ -1617,34 +1853,36 @@ async function answerQuestion(
     return;
   }
 
-  let mentioned = extractMentionedFiles(instruction, filesList);
-  if (mentioned.length === 0) {
-    const deepList = listWorkspaceFiles(rootPath, 6, 5000);
-    mentioned = extractMentionedFiles(instruction, deepList);
+  if (isFileReadQuestion(lowered)) {
+    let mentioned = extractMentionedFiles(instruction, filesList);
     if (mentioned.length === 0) {
-      const byBasename = findFileByBasename(instruction, deepList);
-      if (byBasename) {
-        mentioned = [byBasename];
+      const deepList = listWorkspaceFiles(rootPath, 6, 5000);
+      mentioned = extractMentionedFiles(instruction, deepList);
+      if (mentioned.length === 0) {
+        const byBasename = findFileByBasename(instruction, deepList);
+        if (byBasename) {
+          mentioned = [byBasename];
+        }
       }
     }
-  }
-  if (mentioned.length > 0) {
-    const target = mentioned[0];
-    const fullPath = path.join(rootPath, target);
-    let content = '';
-    try {
-      content = fs.readFileSync(fullPath, 'utf8');
-    } catch (error) {
-      logOutput(output, panelApi, `Unable to read ${target}: ${String(error)}`);
+    if (mentioned.length > 0) {
+      const target = mentioned[0];
+      const fullPath = path.join(rootPath, target);
+      let content = '';
+      try {
+        content = fs.readFileSync(fullPath, 'utf8');
+      } catch (error) {
+        logOutput(output, panelApi, `Unable to read ${target}: ${String(error)}`);
+        return;
+      }
+      const maxChars = 2000;
+      const snippet = content.length > maxChars ? `${content.slice(0, maxChars)}\n... (truncated)` : content;
+      logOutput(output, panelApi, `Content of ${target}:\n${snippet}`);
       return;
     }
-    const maxChars = 2000;
-    const snippet = content.length > maxChars ? `${content.slice(0, maxChars)}\n... (truncated)` : content;
-    logOutput(output, panelApi, `Content of ${target}:\n${snippet}`);
-    return;
   }
 
-  const messages = buildQuestionMessages(instruction, context, filesList);
+  const messages = mergeChatHistory(history, buildQuestionMessages(instruction, context, filesList));
   logOutput(output, panelApi, 'Requesting answer from the local LLM...');
   try {
     if (panelApi?.appendStream) {
@@ -1680,6 +1918,252 @@ async function answerQuestion(
     panelApi?.endStream?.();
     logOutput(output, panelApi, `LLM error: ${String(error)}`);
   }
+}
+
+function isProjectSummaryQuestion(lowered: string): boolean {
+  return (
+    lowered.includes('what is this project') ||
+    lowered.includes('what this project') ||
+    lowered.includes('tell me what this project') ||
+    lowered.includes('what is the project') ||
+    lowered.includes('project about') ||
+    lowered.includes('repo about') ||
+    lowered.includes('codebase about')
+  );
+}
+
+function buildProjectSummaryPayload(
+  rootPath: string,
+  filesList: string[],
+  limits: { maxChars: number; maxFiles: number; maxBytesPerFile: number }
+): { payload: string; truncated: boolean } {
+  const maxFiles = Math.max(1, limits.maxFiles);
+  const maxBytesPerFile = Math.max(1024, limits.maxBytesPerFile);
+  const maxTotalChars = Math.max(2000, limits.maxChars);
+  let totalChars = 0;
+  let fileCount = 0;
+  let truncated = false;
+
+  const ordered = prioritizeProjectFiles(filesList);
+  const parts: string[] = [];
+
+  for (const relativePath of ordered) {
+    if (parts.length >= maxFiles || totalChars >= maxTotalChars) {
+      truncated = true;
+      break;
+    }
+    const fullPath = path.join(rootPath, relativePath);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() || stat.size === 0 || stat.size > maxBytesPerFile) {
+      continue;
+    }
+    let content = '';
+    try {
+      content = fs.readFileSync(fullPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!content.trim()) {
+      continue;
+    }
+    const remaining = maxTotalChars - totalChars;
+    if (remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    const slice = content.length > remaining ? content.slice(0, remaining) : content;
+    parts.push(`File: ${relativePath}\n${slice}`);
+    totalChars += slice.length;
+    if (content.length > remaining) {
+      truncated = true;
+      break;
+    }
+  }
+
+  if (totalChars >= maxTotalChars) {
+    truncated = true;
+    parts.push('---\n[Truncated: payload limit reached]');
+  }
+  return { payload: parts.join('\n---\n'), truncated };
+}
+
+function buildProjectSummaryChunks(
+  rootPath: string,
+  filesList: string[],
+  limits: {
+    maxChars: number;
+    maxFiles: number;
+    maxBytesPerFile: number;
+    chunkChars: number;
+    maxChunks: number;
+  }
+): { chunks: string[]; truncated: boolean } {
+  const maxFiles = Math.max(1, limits.maxFiles);
+  const maxBytesPerFile = Math.max(1024, limits.maxBytesPerFile);
+  const maxTotalChars = Math.max(2000, limits.maxChars);
+  const chunkChars = Math.max(1000, limits.chunkChars);
+  const maxChunks = Math.max(1, limits.maxChunks);
+  let totalChars = 0;
+  let fileCount = 0;
+  let truncated = false;
+
+  const ordered = prioritizeProjectFiles(filesList);
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const relativePath of ordered) {
+    if (chunks.length >= maxChunks || totalChars >= maxTotalChars || fileCount >= maxFiles) {
+      truncated = true;
+      break;
+    }
+
+    const fullPath = path.join(rootPath, relativePath);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(fullPath);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() || stat.size === 0 || stat.size > maxBytesPerFile) {
+      continue;
+    }
+    let content = '';
+    try {
+      content = fs.readFileSync(fullPath, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!content.trim()) {
+      continue;
+    }
+    const remaining = maxTotalChars - totalChars;
+    if (remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    const slice = content.length > remaining ? content.slice(0, remaining) : content;
+    const entry = `File: ${relativePath}\n${slice}`;
+
+    if (current.length + entry.length + 5 > chunkChars) {
+      if (current.trim().length > 0) {
+        chunks.push(current.trim());
+        current = '';
+        if (chunks.length >= maxChunks) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+
+    if (current.length > 0) {
+      current += '\n---\n';
+    }
+    current += entry;
+    totalChars += slice.length;
+    fileCount += 1;
+    if (content.length > remaining) {
+      truncated = true;
+      break;
+    }
+  }
+
+  if (current.trim().length > 0 && chunks.length < maxChunks) {
+    chunks.push(current.trim());
+  }
+
+  if (totalChars >= maxTotalChars) {
+    truncated = true;
+  }
+
+  return { chunks, truncated };
+}
+
+function prioritizeProjectFiles(filesList: string[]): string[] {
+  const priorityPrefixes = [
+    'readme',
+    'src/main',
+    'src/index',
+    'src/app',
+    'src/pages',
+    'src/routes',
+    'src/components'
+  ];
+
+  const scored = filesList.map((file) => {
+    const lower = file.toLowerCase();
+    let score = 0;
+    if (lower.includes('readme')) {
+      score += 5;
+    }
+    priorityPrefixes.forEach((prefix) => {
+      if (lower.startsWith(prefix)) {
+        score += 3;
+      }
+    });
+    if (lower.endsWith('.md')) {
+      score += 2;
+    }
+    if (lower.endsWith('.tsx') || lower.endsWith('.ts') || lower.endsWith('.jsx') || lower.endsWith('.js')) {
+      score += 1;
+    }
+    return { file, score };
+  });
+
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.file);
+}
+
+function buildProjectSummaryMessages(instruction: string, payload: string): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are summarizing a project based ONLY on the provided file contents. ' +
+        'Do not guess. If something is unclear, say it is unclear. ' +
+        'Respond in 5-8 concise bullets, then a 1-sentence summary.'
+    },
+    {
+      role: 'user',
+      content: `Question: ${instruction}\n\nProject files:\n${payload}`
+    }
+  ];
+}
+
+function buildProjectChunkMessages(payload: string, index: number, total: number): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are summarizing a project chunk based ONLY on the provided file contents. ' +
+        'Do not guess. Return 4-6 concise bullets.'
+    },
+    {
+      role: 'user',
+      content: `Chunk ${index} of ${total}:\n\n${payload}`
+    }
+  ];
+}
+
+function buildProjectSummaryFromChunksMessages(instruction: string, chunks: string[]): ChatMessage[] {
+  const joined = chunks.map((chunk, index) => `Chunk ${index + 1} summary:\n${chunk}`).join('\n\n');
+  return [
+    {
+      role: 'system',
+      content:
+        'Combine the chunk summaries into a precise project overview. ' +
+        'Do not guess. Respond in 5-8 concise bullets, then a 1-sentence summary.'
+    },
+    {
+      role: 'user',
+      content: `Question: ${instruction}\n\nChunk summaries:\n${joined}`
+    }
+  ];
 }
 
 function listWorkspaceFiles(rootPath: string, maxDepth: number, maxFiles: number): string[] {

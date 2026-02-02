@@ -6,7 +6,7 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'forge.view';
 
   private view?: vscode.WebviewView;
-  private onRun?: (instruction: string) => void;
+  private onRun?: (instruction: string, history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) => void;
   private onReady?: () => void;
   private onStop?: () => void;
   private pendingSelection?: (files: string[]) => void;
@@ -25,7 +25,7 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
 
     view.webview.onDidReceiveMessage((message) => {
       if (message?.type === 'run' && typeof message.text === 'string') {
-        this.onRun?.(message.text);
+        this.onRun?.(message.text, Array.isArray(message.history) ? message.history : undefined);
       }
       if (message?.type === 'stop') {
         this.onStop?.();
@@ -43,7 +43,7 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
     this.onReady?.();
   }
 
-  setHandler(handler: (instruction: string) => void): void {
+  setHandler(handler: (instruction: string, history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) => void): void {
     this.onRun = handler;
   }
 

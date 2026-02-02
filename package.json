@@ -118,6 +118,53 @@
           "type": "boolean",
           "default": false,
           "description": "Enable the Git workflow (status, commit, push) after changes."
+        },
+        "forge.projectSummaryMaxChars": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 2000,
+          "description": "Maximum characters to include when summarizing the project."
+        },
+        "forge.projectSummaryMaxFiles": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "description": "Maximum number of files to include when summarizing the project."
+        },
+        "forge.projectSummaryMaxFileBytes": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1024,
+          "description": "Maximum size in bytes for any single file included in the project summary."
+        },
+        "forge.projectSummaryChunkChars": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 1000,
+          "description": "Maximum characters per chunk when summarizing large projects."
+        },
+        "forge.projectSummaryMaxChunks": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "description": "Maximum number of chunks to summarize when describing the project."
+        },
+        "forge.chatHistoryMaxMessages": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "description": "Maximum number of recent chat messages to include as context."
+        },
+        "forge.chatHistoryMaxChars": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 0,
+          "description": "Maximum total characters of chat history to include as context."
+        },
+        "forge.intentUseLLM": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the LLM to classify prompt intent (edit/question/fix)."
         }
       }
     }

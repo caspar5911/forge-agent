@@ -187,6 +187,14 @@ Key settings:
 - forge.verboseLogs
 - forge.keepAliveSeconds
 - forge.enableGitWorkflow
+- forge.projectSummaryMaxChars
+- forge.projectSummaryMaxFiles
+- forge.projectSummaryMaxFileBytes
+- forge.projectSummaryChunkChars
+- forge.projectSummaryMaxChunks
+- forge.chatHistoryMaxMessages
+- forge.chatHistoryMaxChars
+- forge.intentUseLLM
 
 Environment variables:
 - FORGE_LLM_ENDPOINT
@@ -209,7 +217,15 @@ Example settings:
   "forge.llmTimeoutMs": 120000,
   "forge.verboseLogs": false,
   "forge.keepAliveSeconds": 0,
-  "forge.enableGitWorkflow": false
+  "forge.enableGitWorkflow": false,
+  "forge.projectSummaryMaxChars": 12000,
+  "forge.projectSummaryMaxFiles": 60,
+  "forge.projectSummaryMaxFileBytes": 60000,
+  "forge.projectSummaryChunkChars": 6000,
+  "forge.projectSummaryMaxChunks": 6,
+  "forge.chatHistoryMaxMessages": 8,
+  "forge.chatHistoryMaxChars": 8000,
+  "forge.intentUseLLM": true
 }
 ```
 

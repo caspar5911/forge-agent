@@ -8,7 +8,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
     `style-src ${webview.cspSource} 'unsafe-inline'; ` +
     `script-src 'nonce-${nonce}';`;
 
-  return `<!DOCTYPE html>
+  return String.raw`<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -166,6 +166,110 @@ export function getForgeHtml(webview: vscode.Webview): string {
         line-height: 1.4;
         border: 1px solid var(--border);
         white-space: pre-wrap;
+        position: relative;
+      }
+
+      .copy-btn {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--muted);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 8px;
+        padding: 2px 6px;
+        font-size: 10px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      .message:hover .copy-btn {
+        opacity: 1;
+      }
+
+      .toast {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        background: rgba(15, 23, 42, 0.9);
+        color: #d5dde7;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 8px 12px;
+        border-radius: 10px;
+        font-size: 12px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(6px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 40;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .message h1,
+      .message h2,
+      .message h3 {
+        margin: 0.6em 0 0.3em;
+        line-height: 1.2;
+      }
+
+      .message h1 {
+        font-size: 18px;
+      }
+
+      .message h2 {
+        font-size: 16px;
+      }
+
+      .message h3 {
+        font-size: 14px;
+      }
+
+      .message ul,
+      .message ol {
+        margin: 0.4em 0 0.4em 1.2em;
+        padding: 0;
+      }
+
+      .message li {
+        margin: 0.2em 0;
+      }
+
+      .message blockquote {
+        margin: 0.5em 0;
+        padding: 0.4em 0.8em;
+        border-left: 3px solid rgba(77, 184, 255, 0.5);
+        background: rgba(13, 18, 26, 0.6);
+        color: var(--muted);
+        border-radius: 8px;
+      }
+
+      .message table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0.6em 0;
+        font-size: 12px;
+      }
+
+      .message th,
+      .message td {
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 6px 8px;
+        text-align: left;
+      }
+
+      .message th {
+        background: rgba(77, 184, 255, 0.12);
+        color: #d9efff;
+        font-weight: 600;
+      }
+
+      .message tr:nth-child(even) td {
+        background: rgba(255, 255, 255, 0.03);
       }
 
       .message.user {
@@ -189,6 +293,49 @@ export function getForgeHtml(webview: vscode.Webview): string {
         color: #d5dde7;
         font-family: "Consolas", "Courier New", monospace;
         font-size: 12px;
+      }
+
+      .message code {
+        background: rgba(15, 23, 42, 0.6);
+        padding: 2px 6px;
+        border-radius: 6px;
+        font-family: "Consolas", "Courier New", monospace;
+        font-size: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      .message pre {
+        background: rgba(10, 15, 20, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 10px 12px;
+        border-radius: 10px;
+        overflow: auto;
+        margin: 0.6em 0;
+        font-size: 12px;
+      }
+
+      .message pre code {
+        background: transparent;
+        border: none;
+        padding: 0;
+        font-size: 12px;
+      }
+
+      .message pre code .token.keyword {
+        color: #7dd3fc;
+      }
+
+      .message pre code .token.string {
+        color: #fbbf24;
+      }
+
+      .message pre code .token.number {
+        color: #a5b4fc;
+      }
+
+      .message pre code .token.comment {
+        color: #94a3b8;
+        font-style: italic;
       }
 
       .diff-line {
@@ -473,6 +620,8 @@ export function getForgeHtml(webview: vscode.Webview): string {
       </div>
     </div>
 
+    <div class="toast" id="toast">Copied</div>
+
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
       const prompt = document.getElementById('prompt');
@@ -488,10 +637,13 @@ export function getForgeHtml(webview: vscode.Webview): string {
       const fileApply = document.getElementById('file-apply');
       const fileCancel = document.getElementById('file-cancel');
       const fileCount = document.getElementById('file-count');
+      const toast = document.getElementById('toast');
+      let chatHistory = [];
       let currentFiles = [];
       let preselectedFiles = [];
       let emptyState = null;
       let streamMessage = null;
+      let streamBuffer = '';
 
       const ensureEmptyState = () => {
         if (!emptyState) {
@@ -542,19 +694,268 @@ export function getForgeHtml(webview: vscode.Webview): string {
         });
       };
 
+      const escapeHtml = (value) =>
+        value
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+
+      const formatInline = (value) => {
+        const tick = String.fromCharCode(96);
+        const codeRegex = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
+        const codeProcessed = value.replace(codeRegex, '<code>$1</code>');
+        const parts = codeProcessed.split(/(<code>.*?<\/code>)/g);
+        return parts
+          .map((part) => {
+            if (part.startsWith('<code>')) {
+              return part;
+            }
+            return part
+              .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+              .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+          })
+          .join('');
+      };
+
+      const highlightCode = (value) => {
+        const escaped = escapeHtml(value);
+        const withComments = escaped
+          .replace(/(\/\/[^\n]*)/g, '<span class="token comment">$1</span>')
+          .replace(/\/\*[\s\S]*?\*\//g, (match) => '<span class="token comment">' + match + '</span>');
+        const withStrings = withComments
+          .replace(/(&quot;[^&]*?&quot;)/g, '<span class="token string">$1</span>')
+          .replace(/(&#39;[^&]*?&#39;)/g, '<span class="token string">$1</span>')
+          .replace(new RegExp(String.fromCharCode(96) + '[^' + String.fromCharCode(96) + ']*' + String.fromCharCode(96), 'g'), '<span class="token string">$&</span>');
+        const withNumbers = withStrings.replace(/\b(\d+(\.\d+)?)\b/g, '<span class="token number">$1</span>');
+        const keywords = [
+          'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'switch', 'case',
+          'break', 'continue', 'class', 'new', 'try', 'catch', 'throw', 'import', 'export', 'from',
+          'async', 'await', 'extends', 'implements', 'interface', 'type', 'enum'
+        ];
+        const keywordRegex = new RegExp('\\b(' + keywords.join('|') + ')\\b', 'g');
+        return withNumbers.replace(keywordRegex, '<span class="token keyword">$1</span>');
+      };
+
+      const renderMarkdown = (value) => {
+        const escaped = escapeHtml(value);
+        const lines = escaped.split(/\r?\n/);
+        let html = '';
+        let inUl = false;
+        let inOl = false;
+        let inTable = false;
+        let tableHeaderDone = false;
+        let tableBuffer = [];
+        let inCodeBlock = false;
+        let codeBuffer = [];
+        const tick = String.fromCharCode(96);
+        const fence = tick + tick + tick;
+
+        const closeLists = () => {
+          if (inUl) {
+            html += '</ul>';
+            inUl = false;
+          }
+          if (inOl) {
+            html += '</ol>';
+            inOl = false;
+          }
+        };
+
+        const flushTable = () => {
+          if (!inTable || tableBuffer.length === 0) {
+            inTable = false;
+            tableHeaderDone = false;
+            tableBuffer = [];
+            return;
+          }
+          html += '<table>';
+          tableBuffer.forEach((row, idx) => {
+            if (idx === 1 && row.every((cell) => /^-+$/.test(cell))) {
+              tableHeaderDone = true;
+              return;
+            }
+            if (idx === 0 && !tableHeaderDone) {
+              html += '<thead><tr>' + row.map((cell) => '<th>' + formatInline(cell.trim()) + '</th>').join('') + '</tr></thead><tbody>';
+              return;
+            }
+            html += '<tr>' + row.map((cell) => '<td>' + formatInline(cell.trim()) + '</td>').join('') + '</tr>';
+          });
+          if (!tableHeaderDone && tableBuffer.length > 0) {
+            html = html.replace('<tbody>', '<tbody>');
+          }
+          if (!html.endsWith('</tbody>')) {
+            html += '</tbody>';
+          }
+          html += '</table>';
+          inTable = false;
+          tableHeaderDone = false;
+          tableBuffer = [];
+        };
+
+        lines.forEach((line) => {
+          const trimmed = line.trim();
+          if (trimmed.startsWith(fence)) {
+            if (!inCodeBlock) {
+              inCodeBlock = true;
+              codeBuffer = [];
+            } else {
+              html += '<pre><code>' + highlightCode(codeBuffer.join('\n')) + '</code></pre>';
+              inCodeBlock = false;
+              codeBuffer = [];
+            }
+            return;
+          }
+
+          if (inCodeBlock) {
+            codeBuffer.push(line);
+            return;
+          }
+
+          const headingMatch = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+          const ulMatch = /^[-*]\s+(.+)$/.exec(trimmed);
+          const olMatch = /^\d+\.\s+(.+)$/.exec(trimmed);
+          const isTableLine = /^\|.*\|$/.test(trimmed);
+          const quoteMatch = /^>\s?(.*)$/.exec(trimmed);
+
+          if (isTableLine) {
+            closeLists();
+            inTable = true;
+            tableBuffer.push(trimmed.split('|').slice(1, -1));
+            return;
+          }
+
+          if (inTable) {
+            flushTable();
+          }
+
+          if (headingMatch) {
+            closeLists();
+            const level = headingMatch[1].length;
+            html += '<h' + level + '>' + formatInline(headingMatch[2]) + '</h' + level + '>';
+            return;
+          }
+
+          if (quoteMatch) {
+            closeLists();
+            html += '<blockquote>' + formatInline(quoteMatch[1] || '') + '</blockquote>';
+            return;
+          }
+
+          if (ulMatch) {
+            if (inOl) {
+              html += '</ol>';
+              inOl = false;
+            }
+            if (!inUl) {
+              html += '<ul>';
+              inUl = true;
+            }
+            html += '<li>' + formatInline(ulMatch[1]) + '</li>';
+            return;
+          }
+
+          if (olMatch) {
+            if (inUl) {
+              html += '</ul>';
+              inUl = false;
+            }
+            if (!inOl) {
+              html += '<ol>';
+              inOl = true;
+            }
+            html += '<li>' + formatInline(olMatch[1]) + '</li>';
+            return;
+          }
+
+          if (trimmed.length === 0) {
+            closeLists();
+            if (inTable) {
+              flushTable();
+            }
+            html += '<br>';
+            return;
+          }
+
+          closeLists();
+          html += '<div>' + formatInline(line) + '</div>';
+        });
+
+        closeLists();
+        if (inTable) {
+          flushTable();
+        }
+        if (inCodeBlock && codeBuffer.length > 0) {
+          html += '<pre><code>' + highlightCode(codeBuffer.join('\n')) + '</code></pre>';
+        }
+        return html;
+      };
+
+      const showToast = (text) => {
+        if (!toast) return;
+        toast.textContent = text;
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 900);
+      };
+
+      const copyText = async (text) => {
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          showToast('Copied');
+          return;
+        } catch {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.focus();
+          textarea.select();
+          try {
+            document.execCommand('copy');
+            showToast('Copied');
+          } catch {
+            showToast('Copy failed');
+          }
+          document.body.removeChild(textarea);
+        }
+      };
+
+      const attachCopyButton = (element, getText) => {
+        const button = document.createElement('button');
+        button.className = 'copy-btn';
+        button.type = 'button';
+        button.textContent = 'Copy';
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const text = getText();
+          void copyText(text);
+        });
+        element.appendChild(button);
+      };
+
       const addMessage = (role, text) => {
         if (!text) return;
         if (streamMessage) {
           streamMessage.classList.remove('streaming');
           streamMessage = null;
+          streamBuffer = '';
         }
         const message = document.createElement('div');
         const resolvedRole = role === 'assistant' ? classifyAssistantMessage(text) : role;
         message.className = 'message ' + resolvedRole;
-        message.textContent = text;
+        if (role === 'user') {
+          message.textContent = text;
+        } else {
+          message.innerHTML = renderMarkdown(text);
+        }
+        attachCopyButton(message, () => text);
         chat.appendChild(message);
         chat.scrollTop = chat.scrollHeight;
         updateEmptyState();
+        if (role === 'user' || role === 'assistant' || role === 'system') {
+          chatHistory.push({ role, content: text });
+        }
       };
 
       const addDiff = (lines) => {
@@ -562,6 +963,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         if (streamMessage) {
           streamMessage.classList.remove('streaming');
           streamMessage = null;
+          streamBuffer = '';
         }
         const message = document.createElement('div');
         message.className = 'message diff';
@@ -576,6 +978,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           span.textContent = line;
           message.appendChild(span);
         });
+        attachCopyButton(message, () => lines.join('\n'));
         chat.appendChild(message);
         chat.scrollTop = chat.scrollHeight;
         updateEmptyState();
@@ -602,7 +1005,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         setStep('update');
         addMessage('user', text);
         prompt.value = '';
-        vscode.postMessage({ type: 'run', text });
+        vscode.postMessage({ type: 'run', text, history: chatHistory });
       });
 
       prompt.addEventListener('keydown', (event) => {
@@ -678,6 +1081,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           const role = message.role || 'assistant';
           streamMessage.className = 'message ' + role + ' streaming';
           streamMessage.textContent = '';
+          streamBuffer = '';
           chat.appendChild(streamMessage);
           chat.scrollTop = chat.scrollHeight;
           updateEmptyState();
@@ -688,14 +1092,18 @@ export function getForgeHtml(webview: vscode.Webview): string {
             streamMessage.className = 'message assistant streaming';
             chat.appendChild(streamMessage);
           }
-          streamMessage.textContent += message.text || '';
+          streamBuffer += message.text || '';
+          streamMessage.textContent = streamBuffer;
           chat.scrollTop = chat.scrollHeight;
           updateEmptyState();
         }
         if (message.type === 'streamEnd') {
           if (streamMessage) {
             streamMessage.classList.remove('streaming');
+            streamMessage.innerHTML = renderMarkdown(streamBuffer);
+            attachCopyButton(streamMessage, () => streamBuffer);
             streamMessage = null;
+            streamBuffer = '';
           }
         }
         if (message.type === 'fileSelection') {
@@ -710,6 +1118,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           chat.textContent = '';
           streamMessage = null;
           ensureEmptyState();
+          chatHistory = [];
         }
       });
 
