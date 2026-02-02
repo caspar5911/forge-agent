@@ -733,7 +733,15 @@ export function getForgeHtml(webview: vscode.Webview): string {
           'async', 'await', 'extends', 'implements', 'interface', 'type', 'enum'
         ];
         const keywordRegex = new RegExp('\\b(' + keywords.join('|') + ')\\b', 'g');
-        return withNumbers.replace(keywordRegex, '<span class="token keyword">$1</span>');
+        const parts = withNumbers.split(/(<[^>]+>)/g);
+        return parts
+          .map((part) => {
+            if (part.startsWith('<')) {
+              return part;
+            }
+            return part.replace(keywordRegex, '<span class="token keyword">$1</span>');
+          })
+          .join('');
       };
 
       const renderMarkdown = (value) => {

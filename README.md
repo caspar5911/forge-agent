@@ -3,8 +3,7 @@
 Forge is an on-prem, agentic coding assistant built as a VS Code extension. It turns short instructions into safe, validated code changes using a local LLM and keeps control explicit and auditable.
 
 ## Status
-- Phase 0-5: complete (UI + workflows)
-- Phase 6: planned (Git Manager hardening)
+- Phase 0-6: complete (UI + workflows + Git Manager)
 
 ## What Forge Does
 - VS Code UI panel + sidebar view
@@ -15,6 +14,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Automatic validation and auto-fix retries
 - Q&A about project context
 - Optional Git workflow (explicit approval only)
+- Dedicated Git commands (stage/commit/push)
 - Local vLLM (OpenAI-compatible) integration
 
 ## Capabilities and Limits
@@ -23,6 +23,8 @@ Capabilities:
 - Select targets automatically or via file picker
 - Validate changes and attempt auto-fixes
 - Answer project questions using harvested context
+- Stage, commit, and push with explicit approval
+- Commit message suggestions (optional)
 
 Limits:
 - No hidden Git actions
@@ -34,7 +36,7 @@ Limits:
 ## Technical Specifications
 - Architecture: VS Code extension + webview UI + local LLM server
 - LLM API: OpenAI-compatible `/v1/chat/completions`
-- Data flow: prompt → file selection → update generation → apply → validation
+- Data flow: prompt -> file selection -> update generation -> apply -> validation
 - OS: Windows + WSL2 (recommended)
 - GPU: NVIDIA with WSL2 GPU support (32 GB VRAM recommended for 32B models)
 - Config: VS Code settings + environment variables
@@ -120,10 +122,10 @@ Phase 5 - UX + Polish
 - Status steps + shortcuts
 - Cleaner logs
 
-Phase 6 - Git Manager (planned)
-- Harden commit flow and approvals
-- Better diff summaries
-- Optional push with explicit consent
+Phase 6 - Git Manager
+- Stage/commit/push commands
+- Optional auto message suggestion
+- Optional auto push (only when skipConfirmations is enabled)
 
 ## Local Setup
 
@@ -187,6 +189,10 @@ Key settings:
 - forge.verboseLogs
 - forge.keepAliveSeconds
 - forge.enableGitWorkflow
+- forge.gitStageMode
+- forge.gitAutoMessage
+- forge.gitMessageStyle
+- forge.gitAutoPush
 - forge.projectSummaryMaxChars
 - forge.projectSummaryMaxFiles
 - forge.projectSummaryMaxFileBytes
@@ -221,6 +227,10 @@ Example settings:
   "forge.verboseLogs": false,
   "forge.keepAliveSeconds": 0,
   "forge.enableGitWorkflow": false,
+  "forge.gitStageMode": "all",
+  "forge.gitAutoMessage": true,
+  "forge.gitMessageStyle": "conventional",
+  "forge.gitAutoPush": false,
   "forge.projectSummaryMaxChars": 12000,
   "forge.projectSummaryMaxFiles": 60,
   "forge.projectSummaryMaxFileBytes": 60000,
@@ -249,6 +259,12 @@ npm run compile
 3) Confirm file selection (multi-file).
 4) Review inline diff preview.
 5) Apply changes and optionally run validation.
+
+## Git Commands
+- Forge: Git Stage
+- Forge: Git Commit
+- Forge: Git Push
+- Optional post-edit workflow via forge.enableGitWorkflow
 
 ## UI Shortcuts
 - Enter: send
@@ -290,4 +306,4 @@ npm run compile
 - If the UI seems stuck, use Esc (stop) and check Output: "Forge".
 
 ## Next
-If you want to proceed with Phase 6, say the word and I will implement the Git Manager hardening.
+- Phase 7: UX polish + hardening

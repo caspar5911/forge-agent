@@ -24,6 +24,18 @@
       {
         "command": "forge.context",
         "title": "Forge: Context"
+      },
+      {
+        "command": "forge.gitStage",
+        "title": "Forge: Git Stage"
+      },
+      {
+        "command": "forge.gitCommit",
+        "title": "Forge: Git Commit"
+      },
+      {
+        "command": "forge.gitPush",
+        "title": "Forge: Git Push"
       }
     ],
     "viewsContainers": {
@@ -118,6 +130,34 @@
           "type": "boolean",
           "default": false,
           "description": "Enable the Git workflow (status, commit, push) after changes."
+        },
+        "forge.gitStageMode": {
+          "type": "string",
+          "enum": [
+            "all",
+            "select"
+          ],
+          "default": "all",
+          "description": "Choose whether to stage all files or select files for commit."
+        },
+        "forge.gitAutoMessage": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate a commit message suggestion using the LLM."
+        },
+        "forge.gitMessageStyle": {
+          "type": "string",
+          "enum": [
+            "conventional",
+            "plain"
+          ],
+          "default": "conventional",
+          "description": "Commit message style when auto-generating."
+        },
+        "forge.gitAutoPush": {
+          "type": "boolean",
+          "default": false,
+          "description": "If skipConfirmations is true, allow automatic push."
         },
         "forge.projectSummaryMaxChars": {
           "type": "number",
