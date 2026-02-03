@@ -27,7 +27,7 @@ export async function maybeRunValidation(rootPath: string, output: vscode.Output
 
   let selected: ValidationOption | null = null;
   if (autoValidation) {
-    selected = pickBestValidationOption(options);
+    return runAllValidationOptions(rootPath, output, options);
   } else {
     const items = options.map((option) => ({
       label: option.label,
@@ -64,6 +64,39 @@ export async function maybeRunValidation(rootPath: string, output: vscode.Output
     output.appendLine(`Validation error: ${String(error)}`);
     return { ok: false, output: String(error), command: selected.command, label: selected.label };
   }
+}
+
+/** Run all validation options in priority order without failing fast. */
+async function runAllValidationOptions(
+  rootPath: string,
+  output: vscode.OutputChannel,
+  options: ValidationOption[]
+): Promise<ValidationResult> {
+  const ordered = orderValidationOptions(options);
+  let combinedOutput = '';
+  let ok = true;
+
+  for (const option of ordered) {
+    output.appendLine(`Running validation: ${option.label}`);
+    try {
+      const result = await runCommand(option.command, rootPath, output);
+      combinedOutput += result.output;
+      if (result.code !== 0) {
+        ok = false;
+      }
+    } catch (error) {
+      output.appendLine(`Validation error: ${String(error)}`);
+      combinedOutput += String(error);
+      ok = false;
+    }
+  }
+
+  return {
+    ok,
+    output: combinedOutput,
+    command: ordered.map((item) => item.command).join(' && '),
+    label: ordered.map((item) => item.label).join(', ')
+  };
 }
 
 /** Run validation first, then attempt auto-fixes if enabled. */
@@ -127,4 +160,20 @@ function pickBestValidationOption(options: ValidationOption[]): ValidationOption
     }
   }
   return options[0] ?? null;
+}
+
+/** Order validation options by priority, preserving unknowns at the end. */
+function orderValidationOptions(options: ValidationOption[]): ValidationOption[] {
+  const priority = ['test', 'typecheck', 'lint', 'build'];
+  const ordered: ValidationOption[] = [];
+  const remaining = [...options];
+
+  for (const label of priority) {
+    const index = remaining.findIndex((option) => option.label === label);
+    if (index >= 0) {
+      ordered.push(remaining.splice(index, 1)[0]);
+    }
+  }
+
+  return ordered.concat(remaining);
 }
