@@ -63,9 +63,38 @@ export function extractExplicitPaths(instruction: string): string[] {
       continue;
     }
     const normalized = raw.replace(/\\/g, '/');
+    if (isLikelyLibraryToken(normalized)) {
+      continue;
+    }
     found.add(normalized);
   }
   return Array.from(found);
+}
+
+function isLikelyLibraryToken(value: string): boolean {
+  const base = path.basename(value);
+  const baseLower = base.replace(/\.[^.]+$/, '').toLowerCase();
+  const blocked = new Set([
+    'react',
+    'react-dom',
+    'vue',
+    'vuejs',
+    'angular',
+    'svelte',
+    'sveltekit',
+    'next',
+    'nextjs',
+    'nuxt',
+    'nuxtjs',
+    'vite',
+    'astro',
+    'solid',
+    'ember',
+    'node',
+    'express',
+    'nestjs'
+  ]);
+  return blocked.has(baseLower);
 }
 
 /** Try to match a file by basename prefix from the instruction. */

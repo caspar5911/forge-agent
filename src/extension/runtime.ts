@@ -15,7 +15,6 @@ import {
   determineIntent,
   getPendingDisambiguation,
   maybeClarifyInstruction,
-  maybePickDisambiguation,
   parseDisambiguationPick
 } from '../forge/intent';
 import { formatDuration, logOutput } from '../forge/logging';
@@ -38,6 +37,11 @@ export type ForgeRuntimeState = {
   panelInstance: ForgePanel | null;
   viewProviderInstance: ForgeViewProvider | null;
   runTimer: NodeJS.Timeout | null;
+  pendingClarification: {
+    instruction: string;
+    questions: string[];
+    rounds: number;
+  } | null;
 };
 
 /** Create a fresh runtime state container for a Forge session. */
@@ -47,7 +51,8 @@ export function createForgeRuntimeState(): ForgeRuntimeState {
     activeAbortController: null,
     panelInstance: null,
     viewProviderInstance: null,
-    runTimer: null
+    runTimer: null,
+    pendingClarification: null
   };
 }
 
@@ -108,14 +113,27 @@ export async function runForge(
 
     const config = vscode.workspace.getConfiguration('forge');
     const enableMultiFile = config.get<boolean>('enableMultiFile') === true;
-    const pending = getPendingDisambiguation();
-    if (pending) {
-      const pick = parseDisambiguationPick(instruction, pending.length);
-      if (pick !== null) {
-        const chosen = pending[pick];
-        clearPendingDisambiguation();
-        instruction = chosen.instruction;
-        logOutput(output, panelApi, `Selected option ${pick + 1}: ${chosen.label}`);
+    let clarificationRounds = 0;
+    if (state.pendingClarification) {
+      const pendingClarification = state.pendingClarification;
+      state.pendingClarification = null;
+      clarificationRounds = pendingClarification.rounds;
+      instruction = formatClarificationFollowup(
+        pendingClarification.instruction,
+        pendingClarification.questions,
+        instruction
+      );
+      logOutput(output, panelApi, 'Received clarification answers. Continuing...');
+    } else {
+      const pending = getPendingDisambiguation();
+      if (pending) {
+        const pick = parseDisambiguationPick(instruction, pending.length);
+        if (pick !== null) {
+          const chosen = pending[pick];
+          clearPendingDisambiguation();
+          instruction = chosen.instruction;
+          logOutput(output, panelApi, `Selected option ${pick + 1}: ${chosen.label}`);
+        }
       }
     }
 
@@ -176,29 +194,32 @@ export async function runForge(
         history
       );
       if (clarification && clarification.length > 0) {
+        const maxClarifyRounds = Math.max(1, config.get<number>('clarifyMaxRounds') ?? 3);
         const gate = config.get<string>('clarifyOnlyIf') ?? 'very-unclear';
         const shouldBlock =
           gate === 'always' || (gate === 'very-unclear' && clarification.length >= 2);
         if (shouldBlock) {
-          const autoAssume = config.get<boolean>('clarifyAutoAssume') === true;
-          if (gate === 'very-unclear') {
-            const picked = await maybePickDisambiguation(
+          const reachedClarifyLimit = clarificationRounds >= maxClarifyRounds;
+          if (!reachedClarifyLimit) {
+            clearPendingDisambiguation();
+            state.pendingClarification = {
               instruction,
-              rootPath,
-              output,
-              panelApi,
-              signal
-            );
-            if (picked) {
-              instruction = `${instruction}\n\nClarified intent:\n${picked}`;
-            } else if (!autoAssume) {
-              logOutput(output, panelApi, 'Need clarification before editing:');
-              clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
-              setStatus('Waiting for clarification');
-              return;
-            }
+              questions: clarification,
+              rounds: clarificationRounds + 1
+            };
+            logOutput(output, panelApi, 'Need clarification before editing:');
+            clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
+            logOutput(output, panelApi, 'Reply with your answers to continue.');
+            setStatus('Waiting for clarification');
+            return;
           }
-          if (autoAssume) {
+          logOutput(
+            output,
+            panelApi,
+            `Clarification limit reached (${maxClarifyRounds}). Proceeding with best effort.`
+          );
+          const autoAssume = config.get<boolean>('clarifyAutoAssume') === true;
+          if (autoAssume || reachedClarifyLimit) {
             const assumptions = buildDefaultAssumptions(clarification, relativePath);
             logOutput(output, panelApi, 'Ambiguous prompt detected. Proceeding with assumptions:');
             assumptions.forEach((line) => logOutput(output, panelApi, `- ${line}`));
@@ -460,4 +481,17 @@ export function cancelActiveRun(
     panelApi.setStatus('Stopped');
     logOutput(output, panelApi, 'Run stopped.');
   }
+}
+
+function formatClarificationFollowup(
+  originalInstruction: string,
+  questions: string[],
+  answers: string
+): string {
+  const trimmedAnswers = answers.trim();
+  const questionBlock = questions.map((item) => `- ${item}`).join('\n');
+  return (
+    `${originalInstruction}\n\nClarification questions:\n${questionBlock}\n\n` +
+    `Clarification answers:\n${trimmedAnswers.length > 0 ? trimmedAnswers : '(no answer provided)'}`
+  );
 }

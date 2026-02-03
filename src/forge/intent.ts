@@ -177,13 +177,15 @@ export async function maybeClarifyInstruction(
   signal: AbortSignal,
   history?: ChatHistoryItem[]
 ): Promise<string[] | null> {
+  const config = vscode.workspace.getConfiguration('forge');
+  const maxQuestions = Math.max(1, config.get<number>('clarifyMaxQuestions') ?? 6);
   const context = harvestContext();
   const filesList = context.files && context.files.length > 0
     ? context.files
     : listWorkspaceFiles(rootPath, 4, 500);
   const messages = mergeChatHistory(
     history,
-    buildClarificationMessages(instruction, context, filesList)
+    buildClarificationMessages(instruction, context, filesList, maxQuestions)
   );
   try {
     const response = await callChatCompletion({}, messages, signal);
@@ -197,7 +199,7 @@ export async function maybeClarifyInstruction(
       .map((item) => String(item))
       .map((item) => item.trim())
       .filter((item) => item.length > 0)
-      .slice(0, 3);
+      .slice(0, maxQuestions);
   } catch (error) {
     logVerbose(output, panelApi, `Clarification check error: ${String(error)}`);
     return null;
@@ -208,7 +210,8 @@ export async function maybeClarifyInstruction(
 function buildClarificationMessages(
   instruction: string,
   context: ProjectContext,
-  filesList: string[]
+  filesList: string[],
+  maxQuestions: number
 ): ChatMessage[] {
   const preview = filesList.slice(0, 120).join('\n');
   const truncated = filesList.length > 120 ? '\n...(truncated)' : '';
@@ -218,7 +221,10 @@ function buildClarificationMessages(
       content:
         'You are checking whether a coding instruction is ambiguous. ' +
         'If it is clear, return {"kind":"proceed"}. ' +
-        'If it is ambiguous, return {"kind":"clarification","questions":[...]} with 1-3 short questions. ' +
+        `If it is ambiguous, return {"kind":"clarification","questions":[...]} with up to ${maxQuestions} questions. ` +
+        'Err on the side of asking questions if any key requirements are missing (files, stack, scope, constraints, acceptance). ' +
+        'Ask as many questions as needed to fully specify requirements. ' +
+        'If the instruction is to create a website or UI, ask about stack, layout/sections, content, style/tone, and assets. ' +
         'Return ONLY valid JSON.'
     },
     {
