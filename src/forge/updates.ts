@@ -16,6 +16,9 @@ import type { ChatHistoryItem, FileSelectionRequester, FileUpdate } from './type
 import type { ForgeUiApi } from '../ui/api';
 
 let lastManualSelection: string[] = [];
+const DEFAULT_MAX_FILES_PER_UPDATE = 6;
+const DEFAULT_MAX_UPDATE_CHARS = 60000;
+const MAX_JSON_RETRIES = 3;
 
 /** Request a full-file update for a single file from the LLM. */
 export async function requestSingleFileUpdate(
@@ -84,11 +87,13 @@ export async function requestMultiFileUpdate(
 ): Promise<FileUpdate[] | null> {
   const config = vscode.workspace.getConfiguration('forge');
   const skipCreateFilePicker = config.get<boolean>('skipCreateFilePicker') === true;
+  const allowNewFiles = shouldAllowNewFiles(instruction);
+  const explicitPaths = extractExplicitPaths(instruction);
   const contextObject = harvestContext();
   const filesList = contextObject.files && contextObject.files.length > 0
     ? contextObject.files
     : listWorkspaceFiles(rootPath, 6, 2000);
-  if (filesList.length === 0) {
+  if (filesList.length === 0 && !allowNewFiles && explicitPaths.length === 0) {
     logOutput(output, panelApi, 'No files found in workspace.');
     return null;
   }
@@ -99,8 +104,6 @@ export async function requestMultiFileUpdate(
     getWorkspaceIndex()
   );
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
-  const allowNewFiles = shouldAllowNewFiles(instruction);
-  const explicitPaths = extractExplicitPaths(instruction);
   const mentionedFiles = extractMentionedFiles(instruction, filesList);
   const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths]));
   const isSmallEdit = isSmallEditInstruction(instruction);
@@ -123,6 +126,7 @@ export async function requestMultiFileUpdate(
       output,
       panelApi,
       extraContext,
+      history,
       signal
     );
   }
@@ -144,6 +148,7 @@ export async function requestMultiFileUpdate(
           output,
           panelApi,
           extraContext,
+          history,
           signal
         );
       }
@@ -174,8 +179,13 @@ export async function requestMultiFileUpdate(
 
   let selectedFiles: string[];
   try {
-    const response = await callChatCompletion({}, selectionMessages, signal);
-    const payload = extractJsonPayload(response);
+    const payload = await requestJsonPayloadWithRetries(
+      selectionMessages,
+      output,
+      panelApi,
+      signal,
+      'selection'
+    );
     selectedFiles = Array.isArray(payload.files) ? payload.files : [];
     logVerbose(output, panelApi, `LLM selected files: ${selectedFiles.join(', ') || '(none)'}`);
   } catch (error) {
@@ -217,45 +227,27 @@ export async function requestMultiFileUpdate(
   }));
 
   logVerbose(output, panelApi, 'Requesting updated files from the local LLM...');
-  panelApi?.setStatus('Requesting LLM...');
-  const updateMessages = mergeChatHistory(
-    history,
-    buildMultiFileUpdateMessages(
+  let updates: Array<{ path: string; content: string }>;
+  try {
+    updates = await requestUpdatesInChunks(
       instruction,
       filePayloads,
       activeRelativePath,
-      extraContext
-    )
-  );
-
-  let updates: Array<{ path: string; content: string }>;
-  try {
-    const response = await callChatCompletion({}, updateMessages, signal);
-    const payload = extractJsonPayload(response);
-    updates = Array.isArray(payload.files) ? payload.files : [];
-    logVerbose(output, panelApi, `LLM returned updates for ${updates.length} files.`);
+      extraContext,
+      output,
+      panelApi,
+      history,
+      signal,
+      config
+    );
   } catch (error) {
     if (isAbortError(error)) {
       logOutput(output, panelApi, 'LLM request aborted.');
       return null;
     }
     logOutput(output, panelApi, `LLM error: ${String(error)}`);
-    logVerbose(output, panelApi, 'Retrying update with stricter JSON request...');
-    try {
-      const retryMessages = buildStrictJsonRetryMessages(updateMessages);
-      const retryResponse = await callChatCompletion({}, retryMessages, signal);
-      const retryPayload = extractJsonPayload(retryResponse);
-      updates = Array.isArray(retryPayload.files) ? retryPayload.files : [];
-      logVerbose(output, panelApi, `LLM returned updates for ${updates.length} files (retry).`);
-    } catch (retryError) {
-      if (isAbortError(retryError)) {
-        logOutput(output, panelApi, 'LLM request aborted.');
-        return null;
-      }
-      logOutput(output, panelApi, `LLM error: ${String(retryError)}`);
-      void vscode.window.showErrorMessage('Forge: LLM update failed.');
-      return null;
-    }
+    void vscode.window.showErrorMessage('Forge: LLM update failed.');
+    return null;
   }
 
   const updateMap = new Map<string, string>();
@@ -564,6 +556,7 @@ async function buildUpdatesFromUserSelection(
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
   extraContext?: string,
+  history?: ChatHistoryItem[],
   signal?: AbortSignal
 ): Promise<FileUpdate[] | null> {
   const resolved = selectedFiles
@@ -581,42 +574,28 @@ async function buildUpdatesFromUserSelection(
   }));
 
   logOutput(output, panelApi, 'Requesting updated files from the local LLM...');
-  panelApi?.setStatus('Requesting LLM...');
-  const updateMessages = buildMultiFileUpdateMessages(
-    instruction,
-    filePayloads,
-    activeRelativePath,
-    extraContext
-  );
-
   let updates: Array<{ path: string; content: string }>;
   try {
-    const response = await callChatCompletion({}, updateMessages, signal);
-    const payload = extractJsonPayload(response);
-    updates = Array.isArray(payload.files) ? payload.files : [];
-    logOutput(output, panelApi, `LLM returned updates for ${updates.length} files.`);
+    const config = vscode.workspace.getConfiguration('forge');
+    updates = await requestUpdatesInChunks(
+      instruction,
+      filePayloads,
+      activeRelativePath,
+      extraContext,
+      output,
+      panelApi,
+      history,
+      signal,
+      config
+    );
   } catch (error) {
     if (isAbortError(error)) {
       logOutput(output, panelApi, 'LLM request aborted.');
       return null;
     }
     logOutput(output, panelApi, `LLM error: ${String(error)}`);
-    logOutput(output, panelApi, 'Retrying update with stricter JSON request...');
-    try {
-      const retryMessages = buildStrictJsonRetryMessages(updateMessages);
-      const retryResponse = await callChatCompletion({}, retryMessages, signal);
-      const retryPayload = extractJsonPayload(retryResponse);
-      updates = Array.isArray(retryPayload.files) ? retryPayload.files : [];
-      logOutput(output, panelApi, `LLM returned updates for ${updates.length} files (retry).`);
-    } catch (retryError) {
-      if (isAbortError(retryError)) {
-        logOutput(output, panelApi, 'LLM request aborted.');
-        return null;
-      }
-      logOutput(output, panelApi, `LLM error: ${String(retryError)}`);
-      void vscode.window.showErrorMessage('Forge: LLM update failed.');
-      return null;
-    }
+    void vscode.window.showErrorMessage('Forge: LLM update failed.');
+    return null;
   }
 
   const updateMap = new Map<string, string>();
@@ -688,13 +667,195 @@ function suggestFilesForInstruction(
   return Array.from(suggestions).slice(0, 12);
 }
 
+type JsonRetryMode = 'selection' | 'update';
+
+/** Request a JSON payload with multiple retry passes and increasingly strict prompts. */
+async function requestJsonPayloadWithRetries(
+  messages: ChatMessage[],
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal | undefined,
+  mode: JsonRetryMode,
+  maxRetries: number = MAX_JSON_RETRIES
+): Promise<{ files?: unknown }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const attemptMessages = buildJsonRetryMessages(messages, attempt, mode);
+    try {
+      const response = await callChatCompletion({}, attemptMessages, signal);
+      return extractJsonPayload(response);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      lastError = error;
+      if (attempt === 0) {
+        logOutput(output, panelApi, `LLM error: ${String(error)}`);
+      } else {
+        logVerbose(output, panelApi, `LLM error (retry ${attempt}/${maxRetries}): ${String(error)}`);
+      }
+      if (attempt < maxRetries) {
+        logVerbose(output, panelApi, `Retrying with stricter JSON request (${attempt + 1}/${maxRetries})...`);
+      }
+    }
+  }
+  throw lastError ?? new Error('LLM JSON retries exhausted.');
+}
+
+/** Request updates in chunks to keep LLM output sizes manageable. */
+async function requestUpdatesInChunks(
+  instruction: string,
+  filePayloads: Array<{ path: string; content: string }>,
+  activeRelativePath: string | null,
+  extraContext: string | undefined,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  history: ChatHistoryItem[] | undefined,
+  signal: AbortSignal | undefined,
+  config: vscode.WorkspaceConfiguration
+): Promise<Array<{ path: string; content: string }>> {
+  const { maxFiles, maxChars } = getUpdateChunkLimits(config);
+  const chunks = chunkFilePayloads(filePayloads, maxFiles, maxChars);
+  if (chunks.length > 1) {
+    logVerbose(output, panelApi, `Chunking update into ${chunks.length} batches.`);
+  }
+
+  const updates: Array<{ path: string; content: string }> = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const label = chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : '';
+    panelApi?.setStatus(`Requesting LLM${label}...`);
+    const updateMessages = mergeChatHistory(
+      history,
+      buildMultiFileUpdateMessages(
+        instruction,
+        chunk,
+        activeRelativePath,
+        extraContext
+      )
+    );
+    const payload = await requestJsonPayloadWithRetries(
+      updateMessages,
+      output,
+      panelApi,
+      signal,
+      'update'
+    );
+    const chunkUpdates = Array.isArray(payload.files) ? payload.files : [];
+    logVerbose(output, panelApi, `LLM returned updates for ${chunkUpdates.length} files${label}.`);
+    updates.push(...chunkUpdates);
+  }
+
+  return updates;
+}
+
+/** Compute chunking limits for multi-file update requests. */
+function getUpdateChunkLimits(config: vscode.WorkspaceConfiguration): { maxFiles: number; maxChars: number } {
+  const configuredMaxFiles = config.get<number>('maxFilesPerUpdate');
+  const configuredMaxChars = config.get<number>('maxUpdateChars');
+  const maxFiles = Math.max(1, configuredMaxFiles ?? DEFAULT_MAX_FILES_PER_UPDATE);
+  const maxChars = Math.max(1000, configuredMaxChars ?? DEFAULT_MAX_UPDATE_CHARS);
+  return { maxFiles, maxChars };
+}
+
+/** Split file payloads into chunks based on file count and estimated JSON size. */
+function chunkFilePayloads(
+  files: Array<{ path: string; content: string }>,
+  maxFiles: number,
+  maxChars: number
+): Array<Array<{ path: string; content: string }>> {
+  if (files.length === 0) {
+    return [];
+  }
+
+  const chunks: Array<Array<{ path: string; content: string }>> = [];
+  let current: Array<{ path: string; content: string }> = [];
+  let currentChars = 0;
+
+  for (const file of files) {
+    const estimated = estimatePayloadChars(file);
+    const wouldExceedFiles = current.length >= maxFiles;
+    const wouldExceedChars = current.length > 0 && currentChars + estimated > maxChars;
+
+    if (wouldExceedFiles || wouldExceedChars) {
+      chunks.push(current);
+      current = [];
+      currentChars = 0;
+    }
+
+    current.push(file);
+    currentChars += estimated;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+/** Estimate the JSON payload size for a single file entry. */
+function estimatePayloadChars(file: { path: string; content: string }): number {
+  return JSON.stringify(file).length;
+}
+
+/** Build retry messages with increasing JSON strictness. */
+function buildJsonRetryMessages(
+  messages: ChatMessage[],
+  attempt: number,
+  mode: JsonRetryMode
+): ChatMessage[] {
+  if (attempt <= 0) {
+    return messages;
+  }
+  if (attempt === 1) {
+    return buildStrictJsonRetryMessages(messages, mode);
+  }
+  if (attempt === 2) {
+    return buildVeryStrictJsonRetryMessages(messages, mode);
+  }
+  return buildMaxStrictJsonRetryMessages(messages, mode);
+}
+
+function getSchemaHint(mode: JsonRetryMode): string {
+  return mode === 'selection'
+    ? '{"files":["path1","path2"]}'
+    : '{"files":[{"path":"...","content":"..."}]}';
+}
+
 /** Wrap an existing prompt with a strict JSON-only system instruction. */
-function buildStrictJsonRetryMessages(messages: ChatMessage[]): ChatMessage[] {
+function buildStrictJsonRetryMessages(messages: ChatMessage[], mode: JsonRetryMode): ChatMessage[] {
   const strictSystem: ChatMessage = {
     role: 'system',
     content:
-      'Return ONLY valid JSON. Do not include code fences, trailing commas, or unescaped newlines. ' +
-      'Ensure all strings are properly JSON-escaped.'
+      'Return ONLY valid JSON with the exact schema ' + getSchemaHint(mode) + '. ' +
+      'Do not include code fences, trailing commas, or extra text.'
+  };
+  return [strictSystem, ...messages];
+}
+
+/** Wrap with stricter JSON guidance, emphasizing escaping. */
+function buildVeryStrictJsonRetryMessages(messages: ChatMessage[], mode: JsonRetryMode): ChatMessage[] {
+  const strictSystem: ChatMessage = {
+    role: 'system',
+    content:
+      'Return ONLY JSON. The response must be parseable by JSON.parse. ' +
+      'Use the exact schema ' + getSchemaHint(mode) + '. ' +
+      'Escape all newlines as \\n and all quotes inside strings as \\". ' +
+      'No code fences, no comments, no markdown.'
+  };
+  return [strictSystem, ...messages];
+}
+
+/** Final retry message with maximum strictness. */
+function buildMaxStrictJsonRetryMessages(messages: ChatMessage[], mode: JsonRetryMode): ChatMessage[] {
+  const strictSystem: ChatMessage = {
+    role: 'system',
+    content:
+      'Output ONLY minified JSON with the exact schema ' + getSchemaHint(mode) + '. ' +
+      'No whitespace outside strings. No extra keys. ' +
+      'All newline characters inside strings must be escaped as \\n. ' +
+      'If unsure, return {"files":[]} only.'
   };
   return [strictSystem, ...messages];
 }
