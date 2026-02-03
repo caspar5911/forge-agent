@@ -7,7 +7,7 @@ import type { ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
 import { getWorkspaceIndex } from '../indexer/workspaceIndex';
 import { buildInlineDiffPreview, getLineChangeSummary } from './diff';
-import { extractJsonPayload } from './json';
+import { FILE_SELECTION_SCHEMA, FILE_UPDATE_SCHEMA } from './schemas';
 import { isAbortError, logOutput, logVerbose } from './logging';
 import { mergeChatHistory } from './intent';
 import { listWorkspaceFiles } from './workspaceFiles';
@@ -16,8 +16,11 @@ import { getForgeSetting } from './settings';
 import { recordPayload, recordPrompt, recordResponse, recordStep } from './trace';
 import type { ChatHistoryItem, FileSelectionRequester, FileUpdate } from './types';
 import type { ForgeUiApi } from '../ui/api';
+import { runCommand } from '../validation';
+import { requestStructuredJson } from '../llm/structured';
 
 let lastManualSelection: string[] = [];
+let installApprovedOnce = false;
 const DEFAULT_MAX_FILES_PER_UPDATE = 6;
 const DEFAULT_MAX_UPDATE_CHARS = 60000;
 const MAX_JSON_RETRIES = 3;
@@ -30,6 +33,7 @@ export async function requestSingleFileUpdate(
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
   history?: ChatHistoryItem[],
+  extraContext?: string,
   signal?: AbortSignal
 ): Promise<FileUpdate | null> {
   let originalContent: string;
@@ -45,7 +49,7 @@ export async function requestSingleFileUpdate(
   panelApi?.setStatus('Requesting LLM...');
   const messages = mergeChatHistory(
     history,
-    buildFullFileMessages(instruction, relativePath, originalContent)
+    buildFullFileMessages(instruction, relativePath, originalContent, extraContext)
   );
   recordPrompt(`Edit prompt (single): ${relativePath}`, messages, true);
 
@@ -90,12 +94,36 @@ export async function requestMultiFileUpdate(
   signal?: AbortSignal
 ): Promise<FileUpdate[] | null> {
   const skipCreateFilePicker = getForgeSetting<boolean>('skipCreateFilePicker') === true;
-  const allowNewFiles = shouldAllowNewFiles(instruction);
-  const explicitPaths = extractExplicitPaths(instruction);
+  const bestEffortFix = getForgeSetting<boolean>('bestEffortFix') === true;
+  const autoAddDependencies = getForgeSetting<boolean>('autoAddDependencies') === true;
+  const autoCreateMissingFiles = getForgeSetting<boolean>('autoCreateMissingFiles') === true;
+  const fixHints = bestEffortFix ? collectFixHints(extraContext, rootPath) : { missingModules: [], missingFiles: [] };
+  const hintFiles: string[] = [];
+  if (autoAddDependencies && fixHints.missingModules.length > 0) {
+    hintFiles.push('package.json');
+  }
+  const hintNewFiles = autoCreateMissingFiles ? fixHints.missingFiles : [];
+  const allowNewFiles = shouldAllowNewFiles(instruction) || hintNewFiles.length > 0;
+  const explicitPaths = Array.from(new Set([...extractExplicitPaths(instruction), ...hintNewFiles]));
+  if (fixHints.missingModules.length > 0) {
+    recordStep('Fix hints', `Missing modules: ${fixHints.missingModules.join(', ')}`);
+  }
+  if (fixHints.missingFiles.length > 0) {
+    recordStep('Fix hints', `Missing files: ${fixHints.missingFiles.join(', ')}`);
+  }
+  if (autoAddDependencies && fixHints.missingModules.length > 0) {
+    instruction += `\n\nMissing dependencies detected: ${fixHints.missingModules.join(', ')}. Add them to package.json.`;
+  }
+  if (autoCreateMissingFiles && fixHints.missingFiles.length > 0) {
+    instruction += `\n\nMissing relative files detected: ${fixHints.missingFiles.join(', ')}. Create these files as needed.`;
+  }
   const contextObject = harvestContext();
   const filesList = contextObject.files && contextObject.files.length > 0
     ? contextObject.files
     : listWorkspaceFiles(rootPath, 6, 2000);
+  if (fs.existsSync(path.join(rootPath, 'package.json')) && !filesList.includes('package.json')) {
+    filesList.push('package.json');
+  }
   if (filesList.length === 0 && !allowNewFiles && explicitPaths.length === 0) {
     logOutput(output, panelApi, 'No files found in workspace.');
     return null;
@@ -108,7 +136,7 @@ export async function requestMultiFileUpdate(
   );
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
   const mentionedFiles = extractMentionedFiles(instruction, filesList);
-  const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths]));
+  const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths, ...hintFiles]));
   const isSmallEdit = isSmallEditInstruction(instruction);
   const autoSelectedFiles =
     directFiles.length > 0
@@ -317,11 +345,16 @@ export async function attemptAutoFix(
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
   history?: ChatHistoryItem[],
-  signal?: AbortSignal
-): Promise<boolean> {
+  signal?: AbortSignal,
+  extraFixContext?: string
+): Promise<FileUpdate[] | null> {
   const fixInstruction =
     'Fix the validation errors based on the output below. ' +
     'Only change files necessary to make validation pass.';
+
+  const extraContext = extraFixContext
+    ? `${validationOutput}\n\nAdditional fix context:\n${extraFixContext}`
+    : validationOutput;
 
   const updates = await requestMultiFileUpdate(
     rootPath,
@@ -332,13 +365,13 @@ export async function attemptAutoFix(
     null,
     null,
     history,
-    validationOutput,
+    extraContext,
     signal
   );
 
   if (!updates || updates.length === 0) {
     logOutput(output, panelApi, 'Auto-fix produced no changes.');
-    return false;
+    return null;
   }
 
   updates.forEach((file) => {
@@ -352,7 +385,46 @@ export async function attemptAutoFix(
     }
   });
 
-  return applyFileUpdates(updates, output, panelApi);
+  const applied = applyFileUpdates(updates, output, panelApi);
+  if (!applied) {
+    return null;
+  }
+
+  const autoInstall = getForgeSetting<boolean>('autoInstallDependencies') === true;
+  const updatedPackageJson = updates.some((file) => normalizePathForMatch(file.relativePath) === 'package.json');
+  if (autoInstall && updatedPackageJson) {
+    const skipConfirmations = getForgeSetting<boolean>('skipConfirmations') === true;
+    let shouldRun = skipConfirmations || installApprovedOnce;
+    if (!skipConfirmations) {
+      if (!installApprovedOnce) {
+        const confirm = await vscode.window.showWarningMessage(
+          'package.json changed. Run install to update dependencies?',
+          'Run install',
+          'Skip'
+        );
+        shouldRun = confirm === 'Run install';
+        if (shouldRun) {
+          installApprovedOnce = true;
+        }
+      }
+    }
+    if (shouldRun) {
+      const context = harvestContext();
+      const command = getInstallCommand(rootPath, context.packageManager ?? null);
+      recordStep('Dependency install', command);
+      logOutput(output, panelApi, `Running install: ${command}`);
+      try {
+        const result = await runCommand(command, rootPath, output);
+        recordStep('Dependency install exit code', String(result.code));
+        recordPayload('Dependency install output', result.output || '(no output)');
+      } catch (error) {
+        recordStep('Dependency install error', String(error));
+        logOutput(output, panelApi, `Install error: ${String(error)}`);
+      }
+    }
+  }
+
+  return updates;
 }
 
 /** Extract updated file content from an LLM response, rejecting diffs. */
@@ -382,11 +454,13 @@ function isLikelyDiff(text: string): boolean {
 function buildFullFileMessages(
   instruction: string,
   relativePath: string,
-  originalContent: string
+  originalContent: string,
+  extraContext?: string
 ): ChatMessage[] {
   const commentStyle = shouldAllowComments(instruction)
     ? 'If you add comments, they must be on their own line above the code. Do not add inline trailing comments.'
     : 'Do not add comments unless explicitly requested.';
+  const contextNote = extraContext ? `\nAdditional context:\n${extraContext}\n` : '';
 
   return [
     {
@@ -402,6 +476,7 @@ function buildFullFileMessages(
       content:
         `Instruction: ${instruction}\n` +
         `Target file: ${relativePath}\n` +
+        contextNote +
         'Current file content:\n' +
         '---\n' +
         `${originalContent}\n` +
@@ -426,6 +501,119 @@ function isSmallEditInstruction(instruction: string): boolean {
   return /\b(typo|spelling|format|reformat|lint|cleanup|minor|small|simple|rename|comment|docs?)\b/i.test(instruction);
 }
 
+type FixHints = {
+  missingModules: string[];
+  missingFiles: string[];
+};
+
+function collectFixHints(extraContext: string | undefined, rootPath: string): FixHints {
+  if (!extraContext) {
+    return { missingModules: [], missingFiles: [] };
+  }
+  const imports = extractMissingImports(extraContext);
+  if (imports.length === 0) {
+    return { missingModules: [], missingFiles: [] };
+  }
+
+  const baseFile = extractErrorFilePath(extraContext);
+  const missingModules = new Set<string>();
+  const missingFiles = new Set<string>();
+
+  imports.forEach((importPath) => {
+    if (isBareModuleImport(importPath)) {
+      missingModules.add(importPath);
+      return;
+    }
+    const resolved = resolveMissingRelativeImport(rootPath, baseFile, importPath);
+    if (resolved) {
+      missingFiles.add(resolved);
+    }
+  });
+
+  return {
+    missingModules: Array.from(missingModules),
+    missingFiles: Array.from(missingFiles)
+  };
+}
+
+function extractMissingImports(text: string): string[] {
+  const patterns = [
+    /Failed to resolve import ["']([^"']+)["']/gi,
+    /Cannot find module ['"]([^'"]+)['"]/gi,
+    /Can't resolve ['"]([^'"]+)['"]/gi
+  ];
+  const results: string[] = [];
+  patterns.forEach((pattern) => {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const value = match[1]?.trim();
+      if (value) {
+        results.push(value);
+      }
+    }
+  });
+  return results;
+}
+
+function extractErrorFilePath(text: string): string | null {
+  const regex = /File:\s+([^\s]+?\.(?:tsx|ts|jsx|js))/gi;
+  let match: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((match = regex.exec(text)) !== null) {
+    last = match[1];
+  }
+  return last;
+}
+
+function isBareModuleImport(importPath: string): boolean {
+  if (importPath.startsWith('.') || importPath.startsWith('/')) {
+    return false;
+  }
+  if (/^[a-zA-Z]:\\/.test(importPath)) {
+    return false;
+  }
+  return true;
+}
+
+function resolveMissingRelativeImport(
+  rootPath: string,
+  baseFilePath: string | null,
+  importPath: string
+): string | null {
+  if (!baseFilePath) {
+    return null;
+  }
+  const normalizedBase = baseFilePath.replace(/\//g, path.sep);
+  const baseDir = path.dirname(normalizedBase);
+  const rawImport = importPath.replace(/\\/g, path.sep);
+  const hasExtension = path.extname(rawImport).length > 0;
+  const baseExt = path.extname(normalizedBase);
+  const preferredExt = ['.tsx', '.ts', '.jsx', '.js'].includes(baseExt) ? baseExt : '.jsx';
+
+  const baseResolved = path.resolve(baseDir, rawImport);
+  const candidates = hasExtension
+    ? [baseResolved]
+    : [
+        `${baseResolved}${preferredExt}`,
+        `${baseResolved}.jsx`,
+        `${baseResolved}.js`,
+        `${baseResolved}.tsx`,
+        `${baseResolved}.ts`
+      ];
+
+  const existing = candidates.find((candidate) => fs.existsSync(candidate));
+  if (existing) {
+    return null;
+  }
+
+  const target = candidates[0];
+  const relative = path.relative(rootPath, target);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative;
+}
+
 /** Resolve and validate a workspace-relative file path. */
 function resolveWorkspacePath(
   rootPath: string,
@@ -442,6 +630,28 @@ function resolveWorkspacePath(
     return null;
   }
   return { fullPath, relativePath };
+}
+
+function getInstallCommand(rootPath: string, packageManager: string | null): string {
+  if (packageManager === 'yarn') {
+    return 'yarn install';
+  }
+  if (packageManager === 'pnpm') {
+    return 'pnpm install';
+  }
+  if (packageManager === 'bun') {
+    return 'bun install';
+  }
+  if (fs.existsSync(path.join(rootPath, 'pnpm-lock.yaml'))) {
+    return 'pnpm install';
+  }
+  if (fs.existsSync(path.join(rootPath, 'yarn.lock'))) {
+    return 'yarn install';
+  }
+  if (fs.existsSync(path.join(rootPath, 'bun.lockb'))) {
+    return 'bun install';
+  }
+  return 'npm install';
 }
 
 /** Normalize paths for case-insensitive matching. */
@@ -707,33 +917,33 @@ async function requestJsonPayloadWithRetries(
 ): Promise<{ files?: unknown }> {
   let lastError: unknown;
   const labelBase = traceLabel ?? (mode === 'selection' ? 'File selection' : 'Update');
+  const schema = mode === 'selection' ? FILE_SELECTION_SCHEMA : FILE_UPDATE_SCHEMA;
+
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const attemptMessages = buildJsonRetryMessages(messages, attempt, mode);
     try {
       const attemptLabel = attempt === 0 ? 'initial' : `retry ${attempt}/${maxRetries}`;
       recordPrompt(`${labelBase} prompt (${attemptLabel})`, attemptMessages, true);
-      const response = await callChatCompletion({}, attemptMessages, signal);
-      const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-      if (raw) {
-        recordResponse(`${labelBase} response (${attemptLabel})`, raw);
-      }
-      return extractJsonPayload(response);
+      const payload = await requestStructuredJson<{ files?: unknown }>(
+        attemptMessages,
+        schema,
+        { signal, maxRetries: 0 }
+      );
+      recordResponse(`${labelBase} response (${attemptLabel})`, JSON.stringify(payload));
+      return payload;
     } catch (error) {
       if (isAbortError(error)) {
         throw error;
       }
       lastError = error;
       recordStep(`${labelBase} JSON error`, String(error));
-      if (attempt === 0) {
-        logOutput(output, panelApi, `LLM error: ${String(error)}`);
-      } else {
-        logVerbose(output, panelApi, `LLM error (retry ${attempt}/${maxRetries}): ${String(error)}`);
-      }
+      logVerbose(output, panelApi, `LLM error (retry ${attempt}/${maxRetries}): ${String(error)}`);
       if (attempt < maxRetries) {
         logVerbose(output, panelApi, `Retrying with stricter JSON request (${attempt + 1}/${maxRetries})...`);
       }
     }
   }
+  logOutput(output, panelApi, 'Structured JSON parsing failed after retries.');
   throw lastError ?? new Error('LLM JSON retries exhausted.');
 }
 

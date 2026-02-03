@@ -128,6 +128,26 @@
           "minimum": 0,
           "description": "Maximum number of auto-fix attempts after validation fails."
         },
+        "forge.bestEffortFix": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow best-effort fix behavior (auto-add deps, create missing files) when validation fails."
+        },
+        "forge.autoAddDependencies": {
+          "type": "boolean",
+          "default": false,
+          "description": "When missing modules are detected, allow Forge to add them to package.json during auto-fix."
+        },
+        "forge.autoCreateMissingFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "When missing relative imports are detected, allow Forge to create the files during auto-fix."
+        },
+        "forge.autoInstallDependencies": {
+          "type": "boolean",
+          "default": false,
+          "description": "When package.json changes in auto-fix, run the package manager install command."
+        },
         "forge.llmTimeoutMs": {
           "type": "number",
           "default": 120000,

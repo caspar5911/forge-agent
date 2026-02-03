@@ -2,11 +2,11 @@
 import * as vscode from 'vscode';
 import { harvestContext, type ProjectContext } from '../context';
 import type { ChatMessage } from '../llm/client';
-import { callChatCompletion } from '../llm/client';
-import { extractJsonObject } from './json';
+import { INTENT_SCHEMA, CLARIFICATION_SCHEMA, CLARIFICATION_SUGGEST_SCHEMA, DISAMBIGUATION_SCHEMA } from './schemas';
 import { logOutput, logVerbose } from './logging';
 import { listWorkspaceFiles } from './workspaceFiles';
 import { getForgeSetting } from './settings';
+import { requestStructuredJson } from '../llm/structured';
 import { recordPrompt, recordResponse } from './trace';
 import type { ChatHistoryItem, Intent } from './types';
 import type { ForgeUiApi } from '../ui/api';
@@ -68,12 +68,8 @@ export async function determineIntent(
   const messages = buildIntentMessages(instruction);
   recordPrompt('Intent prompt', messages, true);
   try {
-    const response = await callChatCompletion({}, messages, signal);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Intent response', raw);
-    }
-    const payload = extractJsonObject(response);
+    const payload = await requestStructuredJson<Record<string, unknown>>(messages, INTENT_SCHEMA, { signal });
+    recordResponse('Intent response', JSON.stringify(payload));
     const intent = String(payload.intent ?? '').toLowerCase();
     if (intent === 'edit' || intent === 'question' || intent === 'fix') {
       if (intent === 'fix' && !isValidationFixRequest(instruction)) {
@@ -203,12 +199,8 @@ export async function maybeClarifyInstruction(
   );
   recordPrompt('Clarification prompt', messages, true);
   try {
-    const response = await callChatCompletion({}, messages, signal);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Clarification response', raw);
-    }
-    const payload = extractJsonObject(response);
+    const payload = await requestStructuredJson<Record<string, unknown>>(messages, CLARIFICATION_SCHEMA, { signal });
+    recordResponse('Clarification response', JSON.stringify(payload));
     const kind = String(payload.kind ?? '').toLowerCase();
     if (kind !== 'clarification') {
       return null;
@@ -249,12 +241,12 @@ export async function maybeSuggestClarificationAnswers(
   );
   recordPrompt('Clarification suggestions prompt', messages, true);
   try {
-    const response = await callChatCompletion({}, messages, signal);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Clarification suggestions response', raw);
-    }
-    const payload = extractJsonObject(response) as { answers?: unknown; plan?: unknown };
+    const payload = await requestStructuredJson<Record<string, unknown>>(
+      messages,
+      CLARIFICATION_SUGGEST_SCHEMA,
+      { signal }
+    );
+    recordResponse('Clarification suggestions response', JSON.stringify(payload));
     const answers = Array.isArray(payload.answers) ? payload.answers.map((item) => String(item)).filter(Boolean) : [];
     const plan = Array.isArray(payload.plan) ? payload.plan.map((item) => String(item)).filter(Boolean) : [];
     return { answers, plan };
@@ -365,12 +357,12 @@ export async function maybePickDisambiguation(
   const messages = buildDisambiguationOptionsMessages(instruction, context, filesList);
   recordPrompt('Disambiguation prompt', messages, true);
   try {
-    const response = await callChatCompletion({}, messages, signal);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Disambiguation response', raw);
-    }
-    const payload = extractJsonObject(response);
+    const payload = await requestStructuredJson<Record<string, unknown>>(
+      messages,
+      DISAMBIGUATION_SCHEMA,
+      { signal }
+    );
+    recordResponse('Disambiguation response', JSON.stringify(payload));
     const options = Array.isArray(payload.options) ? payload.options : [];
     const mapped = options
       .map((option) => {

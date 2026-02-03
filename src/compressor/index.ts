@@ -1,7 +1,8 @@
 /** Task compressor: turns instructions into a plan or clarification questions. */
 import type { LLMConfig } from '../llm/config';
-import type { ChatCompletionResponse, ChatMessage } from '../llm/client';
-import { callChatCompletion } from '../llm/client';
+import type { ChatMessage } from '../llm/client';
+import { requestStructuredJson } from '../llm/structured';
+import { TASK_PLAN_SCHEMA } from '../forge/schemas';
 import { recordPrompt, recordResponse, recordStep } from '../forge/trace';
 
 // Minimal shape for any project context data.
@@ -34,13 +35,9 @@ export async function compressTask(
   recordPrompt('Task compression prompt', messages, true);
 
   try {
-    const response = await callChatCompletion(config, messages);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Task compression response', raw);
-    }
-    const plan = parseTaskPlan(response);
-    return plan;
+    const payload = await requestStructuredJson<TaskPlan>(messages, TASK_PLAN_SCHEMA, { config });
+    recordResponse('Task compression response', JSON.stringify(payload));
+    return payload;
   } catch {
     recordStep('Task compression fallback', 'Using local fallback plan.');
     // If the LLM fails, fall back to a deterministic local plan.
@@ -120,50 +117,4 @@ function buildMessages(instruction: string, context: ProjectContext): ChatMessag
       content: `Instruction:\n${instruction}\n\nProjectContext:\n${contextJson}`
     }
   ];
-}
-
-/** Parse and validate the task plan JSON from the LLM response. */
-function parseTaskPlan(response: ChatCompletionResponse): TaskPlan {
-  const content = response.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    const errorMessage = response.error?.message ?? 'No content returned by LLM.';
-    throw new Error(errorMessage);
-  }
-
-  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced ? fenced[1].trim() : content;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`Invalid JSON from LLM: ${String(error)}`);
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('LLM output is not a JSON object.');
-  }
-
-  const plan = parsed as { kind?: unknown; steps?: unknown; questions?: unknown };
-  if (plan.kind === 'clarification') {
-    if (!Array.isArray(plan.questions) || plan.questions.length === 0) {
-      throw new Error('Clarification must include a non-empty questions array.');
-    }
-    if (!plan.questions.every((q) => typeof q === 'string' && q.trim().length > 0)) {
-      throw new Error('Clarification questions must be non-empty strings.');
-    }
-    return { kind: 'clarification', questions: plan.questions };
-  }
-
-  if (plan.kind === 'plan') {
-    if (!Array.isArray(plan.steps) || plan.steps.length === 0) {
-      throw new Error('Plan must include a non-empty steps array.');
-    }
-    if (!plan.steps.every((s) => typeof s === 'string' && s.trim().length > 0)) {
-      throw new Error('Plan steps must be non-empty strings.');
-    }
-    return { kind: 'plan', steps: plan.steps };
-  }
-
-  throw new Error('LLM output has an invalid kind.');
 }

@@ -22,7 +22,11 @@ import { formatDuration, logOutput } from '../forge/logging';
 import { answerQuestion } from '../forge/questions';
 import { getForgeSetting } from '../forge/settings';
 import { endTrace, recordPayload, recordStep, startTrace } from '../forge/trace';
-import type { ChatHistoryItem } from '../forge/types';
+import { buildContextBundle } from '../forge/contextBundle';
+import { generateHumanSummary } from '../forge/humanSummary';
+import { generatePlanSummary } from '../forge/planSummary';
+import { verifyChanges } from '../forge/verification';
+import type { ChatHistoryItem, FileUpdate } from '../forge/types';
 import {
   applyFileUpdates,
   attemptAutoFix,
@@ -246,14 +250,7 @@ export async function runForge(
       return;
     }
 
-    if (intent === 'fix') {
-      recordStep('Validation strategy', 'validate-first');
-      await runValidationFirstFix(rootPath, instruction, output, panelApi, signal, history);
-      setStatus('Done');
-      return;
-    }
-
-    const clarifyFirst = getForgeSetting<boolean>('clarifyBeforeEdit') !== false;
+    const clarifyFirst = getForgeSetting<boolean>('clarifyBeforeEdit') !== false && intent !== 'fix';
     if (clarifyFirst && !skipClarifyCheck) {
       const clarification = await maybeClarifyInstruction(
         instruction,
@@ -369,6 +366,26 @@ export async function runForge(
       }
     }
 
+    const planSummary = await generatePlanSummary(
+      instruction,
+      rootPath,
+      output,
+      panelApi,
+      signal,
+      history
+    );
+    if (planSummary && planSummary.length > 0) {
+      logOutput(output, panelApi, 'Plan summary:');
+      planSummary.forEach((step) => logOutput(output, panelApi, `- ${step}`));
+    }
+
+    if (intent === 'fix') {
+      recordStep('Validation strategy', 'validate-first');
+      await runValidationFirstFix(rootPath, instruction, output, panelApi, signal, history);
+      setStatus('Done');
+      return;
+    }
+
     if (!enableMultiFile && (!activeFilePath || !relativePath)) {
       log('No active editor. Open a file to edit first.');
       void vscode.window.showErrorMessage('Forge: Open a file to edit first.');
@@ -378,6 +395,12 @@ export async function runForge(
 
     const skipConfirmations = getForgeSetting<boolean>('skipConfirmations') === true;
     const skipTargetConfirmation = getForgeSetting<boolean>('skipTargetConfirmation') === true;
+    const contextBundle = await buildContextBundle(instruction, rootPath);
+    if (contextBundle && contextBundle.files.length > 0) {
+      recordStep('Context bundle', contextBundle.files.join('\n'));
+    }
+    let appliedUpdates: FileUpdate[] = [];
+    let changeSummaryText = '';
 
     if (!enableMultiFile && !(skipConfirmations || skipTargetConfirmation)) {
       const confirmTarget = await vscode.window.showWarningMessage(
@@ -403,7 +426,7 @@ export async function runForge(
         state.panelInstance,
         state.viewProviderInstance,
         history,
-        undefined,
+        contextBundle?.text,
         signal
       );
 
@@ -412,6 +435,7 @@ export async function runForge(
         setStatus('No changes');
         return;
       }
+      appliedUpdates = updatedFiles;
 
       await logActionPurpose(
         instruction,
@@ -436,6 +460,8 @@ export async function runForge(
         }
       }
       summaries.forEach((line) => log(line));
+      const summaryBlock = buildChangeSummaryText(updatedFiles, summaries);
+      changeSummaryText = summaryBlock.text;
 
       if (!skipConfirmations) {
         const confirmApply = await vscode.window.showWarningMessage(
@@ -470,6 +496,7 @@ export async function runForge(
         output,
         panelApi,
         history,
+        contextBundle?.text,
         signal
       );
 
@@ -478,6 +505,7 @@ export async function runForge(
         setStatus('No changes');
         return;
       }
+      appliedUpdates = [updatedFile];
 
       await logActionPurpose(instruction, [updatedFile.relativePath], output, panelApi, signal);
 
@@ -489,6 +517,8 @@ export async function runForge(
       if (summary) {
         log(summary);
       }
+      const summaryBlock = buildChangeSummaryText([updatedFile], summary ? [summary] : []);
+      changeSummaryText = summaryBlock.text;
       const inlineDiff = buildInlineDiffPreview(
         updatedFile.original,
         updatedFile.updated,
@@ -546,14 +576,55 @@ export async function runForge(
     if (rootPath) {
       const autoFixValidation = getForgeSetting<boolean>('autoFixValidation') === true;
       const maxFixRetries = Math.max(0, getForgeSetting<number>('autoFixMaxRetries') ?? 0);
+      let remainingFixRetries = maxFixRetries;
+      let verificationResult: { status: 'pass' | 'fail'; issues: string[]; confidence?: string } | null = null;
 
       setStatus('Running validation...');
       let validationResult = await maybeRunValidation(rootPath, output);
 
-      if (!validationResult.ok && autoFixValidation && maxFixRetries > 0) {
-        for (let attempt = 1; attempt <= maxFixRetries; attempt += 1) {
-          log(`Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
+      while (true) {
+        if (!validationResult.ok) {
+          if (autoFixValidation && remainingFixRetries > 0) {
+            const attempt = maxFixRetries - remainingFixRetries + 1;
+            log(`Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
+            setStatus(`Auto-fix ${attempt}/${maxFixRetries}`);
+            const fixed = await attemptAutoFix(
+              rootPath,
+              instruction,
+              validationResult.output,
+              output,
+              panelApi,
+              history,
+              signal
+            );
+            if (!fixed) {
+              break;
+            }
+            appliedUpdates = fixed;
+            changeSummaryText = buildChangeSummaryText(fixed, []).text;
+            remainingFixRetries -= 1;
+            setStatus('Re-running validation...');
+            validationResult = await maybeRunValidation(rootPath, output);
+            continue;
+          }
+          break;
+        }
+
+        verificationResult = await verifyChanges(
+          instruction,
+          changeSummaryText,
+          validationResult.output,
+          signal
+        );
+        if (verificationResult.status === 'pass') {
+          break;
+        }
+
+        if (autoFixValidation && remainingFixRetries > 0) {
+          const attempt = maxFixRetries - remainingFixRetries + 1;
+          log(`Auto-fix (verification) ${attempt} of ${maxFixRetries}...`);
           setStatus(`Auto-fix ${attempt}/${maxFixRetries}`);
+          const extraContext = verificationResult.issues.join('\n');
           const fixed = await attemptAutoFix(
             rootPath,
             instruction,
@@ -561,20 +632,20 @@ export async function runForge(
             output,
             panelApi,
             history,
-            signal
+            signal,
+            extraContext
           );
           if (!fixed) {
             break;
           }
-
+          appliedUpdates = fixed;
+          changeSummaryText = buildChangeSummaryText(fixed, []).text;
+          remainingFixRetries -= 1;
           setStatus('Re-running validation...');
           validationResult = await maybeRunValidation(rootPath, output);
-          if (validationResult.ok) {
-            log('Validation passed after auto-fix.');
-            setStatus('Validation passed');
-            break;
-          }
+          continue;
         }
+        break;
       }
 
       if (!validationResult.ok) {
@@ -583,7 +654,35 @@ export async function runForge(
         return;
       }
 
-      log('Validation passed.');
+      if (verificationResult && verificationResult.status === 'fail') {
+        log('Verification failed. Review the issues and consider another pass.');
+        verificationResult.issues.forEach((issue) => log(`- ${issue}`));
+        setStatus('Verification failed');
+      } else {
+        log('Validation passed.');
+      }
+
+      const summary = await generateHumanSummary(
+        instruction,
+        changeSummaryText,
+        signal,
+        history
+      );
+      if (summary) {
+        logOutput(output, panelApi, 'Summary:');
+        summary.split(/\r?\n/).forEach((line) => {
+          if (line.trim().length > 0) {
+            logOutput(output, panelApi, line);
+          }
+        });
+      } else if (changeSummaryText) {
+        logOutput(output, panelApi, 'Summary:');
+        changeSummaryText.split(/\r?\n/).forEach((line) => {
+          if (line.trim().length > 0) {
+            logOutput(output, panelApi, line);
+          }
+        });
+      }
 
       const enableGitWorkflow = getForgeSetting<boolean>('enableGitWorkflow') === true;
       if (enableGitWorkflow) {
@@ -680,4 +779,17 @@ function parseClarificationDecision(input: string): 'accept' | 'reject' | 'answe
     return 'reject';
   }
   return 'answer';
+}
+
+function buildChangeSummaryText(
+  updates: FileUpdate[],
+  summaries: string[]
+): { text: string; lines: string[] } {
+  const lines = summaries.filter((line) => line && line.trim().length > 0);
+  if (lines.length === 0) {
+    updates.forEach((update) => {
+      lines.push(`- ${update.relativePath}`);
+    });
+  }
+  return { text: lines.join('\n'), lines };
 }

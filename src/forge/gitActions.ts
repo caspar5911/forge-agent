@@ -2,7 +2,8 @@
 import * as vscode from 'vscode';
 import type { ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
-import { extractJsonObject } from './json';
+import { GIT_INTENT_SCHEMA } from './schemas';
+import { requestStructuredJson } from '../llm/structured';
 import { getForgeSetting } from './settings';
 import { recordPrompt, recordResponse, recordStep } from './trace';
 import {
@@ -683,12 +684,8 @@ export async function maybeDetectGitActions(
   try {
     const messages = buildGitIntentMessages(instruction);
     recordPrompt('Git intent prompt', messages, true);
-    const response = await callChatCompletion({}, messages);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Git intent response', raw);
-    }
-    const payload = extractJsonObject(response) as GitIntentPayload;
+    const payload = await requestStructuredJson<GitIntentPayload>(messages, GIT_INTENT_SCHEMA, {});
+    recordResponse('Git intent response', JSON.stringify(payload));
     const actions = Array.isArray(payload.actions) ? payload.actions : [];
     const mapped = actions
       .map((action) => normalizeGitAction(action))

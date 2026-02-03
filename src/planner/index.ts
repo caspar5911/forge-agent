@@ -2,8 +2,9 @@
 // Node path utilities for safe relative path handling.
 import * as path from 'path';
 import type { LLMConfig } from '../llm/config';
-import type { ChatCompletionResponse, ChatMessage } from '../llm/client';
-import { callChatCompletion } from '../llm/client';
+import type { ChatMessage } from '../llm/client';
+import { requestStructuredJson } from '../llm/structured';
+import { TOOL_CALL_SCHEMA } from '../forge/schemas';
 import { recordPrompt, recordResponse, recordStep } from '../forge/trace';
 // Task plan type from the compressor phase.
 import type { TaskPlan } from '../compressor/index';
@@ -48,12 +49,9 @@ export async function nextToolCall(
   recordPrompt('Planner prompt', messages, true);
 
   try {
-    const response = await callChatCompletion(config, messages);
-    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
-    if (raw) {
-      recordResponse('Planner response', raw);
-    }
-    return parseToolCall(response);
+    const payload = await requestStructuredJson<ToolCall>(messages, TOOL_CALL_SCHEMA, { config });
+    recordResponse('Planner response', JSON.stringify(payload));
+    return payload;
   } catch {
     recordStep('Planner fallback', 'Using local planner fallback.');
     // Fall back to deterministic planning if the LLM fails.
@@ -228,48 +226,4 @@ function buildMessages(input: PlannerInput): ChatMessage[] {
         `CurrentStep: ${step ?? 'N/A'}\n`
     }
   ];
-}
-
-/** Parse and validate a tool call JSON from the LLM response. */
-function parseToolCall(response: ChatCompletionResponse): ToolCall {
-  const content = response.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    const errorMessage = response.error?.message ?? 'No content returned by LLM.';
-    throw new Error(errorMessage);
-  }
-
-  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced ? fenced[1].trim() : content;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`Invalid JSON from LLM: ${String(error)}`);
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('LLM output is not a JSON object.');
-  }
-
-  const toolCall = parsed as { tool?: unknown; path?: unknown; command?: unknown };
-  if (toolCall.tool === 'read_file') {
-    if (typeof toolCall.path !== 'string' || toolCall.path.trim().length === 0) {
-      throw new Error('read_file requires a non-empty path.');
-    }
-    return { tool: 'read_file', path: toolCall.path };
-  }
-
-  if (toolCall.tool === 'request_diff') {
-    return { tool: 'request_diff' };
-  }
-
-  if (toolCall.tool === 'run_validation_command') {
-    if (typeof toolCall.command !== 'string' || toolCall.command.trim().length === 0) {
-      throw new Error('run_validation_command requires a non-empty command.');
-    }
-    return { tool: 'run_validation_command', command: toolCall.command };
-  }
-
-  throw new Error('LLM output has an invalid tool.');
 }

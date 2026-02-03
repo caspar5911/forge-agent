@@ -6,6 +6,10 @@ import { logOutput } from './logging';
 import { attemptAutoFix } from './updates';
 import { getForgeSetting } from './settings';
 import { recordPayload, recordStep } from './trace';
+import { verifyChanges } from './verification';
+import { generateHumanSummary } from './humanSummary';
+import { getLineChangeSummary } from './diff';
+import type { FileUpdate } from './types';
 import type { ChatHistoryItem } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -127,37 +131,109 @@ export async function runValidationFirstFix(
 
   const autoFixValidation = getForgeSetting<boolean>('autoFixValidation') === true;
   const maxFixRetries = Math.max(0, getForgeSetting<number>('autoFixMaxRetries') ?? 0);
+  let remainingFixRetries = maxFixRetries;
+  let lastUpdates: FileUpdate[] | null = null;
 
   if (!autoFixValidation || maxFixRetries === 0) {
     logOutput(output, panelApi, 'Auto-fix disabled.');
     return;
   }
 
-  for (let attempt = 1; attempt <= maxFixRetries; attempt += 1) {
-    logOutput(output, panelApi, `Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
-    recordStep('Auto-fix attempt', `${attempt} of ${maxFixRetries}`);
-    const fixed = await attemptAutoFix(
+  while (true) {
+    if (!validationResult.ok) {
+      if (remainingFixRetries <= 0) {
+        break;
+      }
+      const attempt = maxFixRetries - remainingFixRetries + 1;
+      logOutput(output, panelApi, `Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
+      recordStep('Auto-fix attempt', `${attempt} of ${maxFixRetries}`);
+      const fixedUpdates = await attemptAutoFix(
+        rootPath,
+        instruction,
+        validationResult.output,
+        output,
+        panelApi,
+        history,
+        signal
+      );
+      if (!fixedUpdates) {
+        break;
+      }
+      lastUpdates = fixedUpdates;
+      remainingFixRetries -= 1;
+      logOutput(output, panelApi, 'Re-running validation...');
+      validationResult = await maybeRunValidation(rootPath, output);
+      continue;
+    }
+
+    const summaryText = buildFixSummary(lastUpdates);
+    const verification = await verifyChanges(
+      instruction,
+      summaryText,
+      validationResult.output,
+      signal
+    );
+    if (verification.status === 'pass') {
+      logOutput(output, panelApi, 'Verification passed.');
+      break;
+    }
+    if (remainingFixRetries <= 0) {
+      logOutput(output, panelApi, 'Verification failed. No retries left.');
+      verification.issues.forEach((issue) => logOutput(output, panelApi, `- ${issue}`));
+      break;
+    }
+    const attempt = maxFixRetries - remainingFixRetries + 1;
+    logOutput(output, panelApi, `Auto-fix (verification) ${attempt} of ${maxFixRetries}...`);
+    const extraContext = verification.issues.join('\n');
+    const fixedUpdates = await attemptAutoFix(
       rootPath,
       instruction,
       validationResult.output,
       output,
       panelApi,
       history,
-      signal
+      signal,
+      extraContext
     );
-    if (!fixed) {
+    if (!fixedUpdates) {
       break;
     }
-
+    lastUpdates = fixedUpdates;
+    remainingFixRetries -= 1;
     logOutput(output, panelApi, 'Re-running validation...');
     validationResult = await maybeRunValidation(rootPath, output);
-    if (validationResult.ok) {
-      logOutput(output, panelApi, 'Validation passed after auto-fix.');
-      return;
-    }
   }
 
-  logOutput(output, panelApi, 'Validation still failing after auto-fix attempts.');
+  if (!validationResult.ok) {
+    logOutput(output, panelApi, 'Validation still failing after auto-fix attempts.');
+    return;
+  }
+
+  const finalSummary = buildFixSummary(lastUpdates);
+  if (finalSummary) {
+    const summary = await generateHumanSummary(instruction, finalSummary, signal, history);
+    if (summary) {
+      logOutput(output, panelApi, 'Summary:');
+      summary.split(/\r?\n/).forEach((line) => logOutput(output, panelApi, line));
+    }
+  }
+}
+
+function buildFixSummary(updates: FileUpdate[] | null): string {
+  if (!updates || updates.length === 0) {
+    return '';
+  }
+  const summaries: string[] = [];
+  updates.forEach((file) => {
+    const summary = getLineChangeSummary(file.original, file.updated, file.relativePath);
+    if (summary) {
+      summaries.push(summary);
+    }
+  });
+  if (summaries.length === 0) {
+    return updates.map((file) => `- ${file.relativePath}`).join('\n');
+  }
+  return summaries.join('\n');
 }
 
 /** Choose the highest-priority validation option. */

@@ -11,6 +11,15 @@ export type ChatCompletionResponse = {
   error?: { message?: string };
 };
 
+export type ResponseFormat =
+  | { type: 'json_object' }
+  | { type: 'json_schema'; json_schema: { name: string; schema: unknown; strict?: boolean } };
+
+export type ChatCompletionOptions = {
+  responseFormat?: ResponseFormat;
+  extraBody?: Record<string, unknown>;
+};
+
 /** Ping the LLM /models endpoint to keep it warm. */
 export function pingLLM(config: LLMConfig = {}): Promise<void> {
   const resolved = resolveLLMConfig(config);
@@ -50,6 +59,17 @@ export async function callChatCompletion(
   return requestChatCompletion(resolved, messages, signal);
 }
 
+/** Call a chat completion request with additional request body options. */
+export async function callChatCompletionWithOptions(
+  config: LLMConfig,
+  messages: ChatMessage[],
+  options: ChatCompletionOptions,
+  signal?: AbortSignal
+): Promise<ChatCompletionResponse> {
+  const resolved = resolveLLMConfig(config);
+  return requestChatCompletion(resolved, messages, signal, options);
+}
+
 /** Call a streaming chat completion request and emit deltas. */
 export async function callChatCompletionStream(
   config: LLMConfig,
@@ -65,15 +85,23 @@ export async function callChatCompletionStream(
 function requestChatCompletion(
   config: ResolvedLLMConfig,
   messages: ChatMessage[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: ChatCompletionOptions
 ): Promise<ChatCompletionResponse> {
   const url = new URL(config.endpoint.replace(/\/$/, '') + '/chat/completions');
-  const body = JSON.stringify({
+  const bodyObject: Record<string, unknown> = {
     model: config.model,
     messages,
     temperature: 0,
     stream: false
-  });
+  };
+  if (options?.responseFormat) {
+    bodyObject.response_format = options.responseFormat;
+  }
+  if (options?.extraBody) {
+    Object.assign(bodyObject, options.extraBody);
+  }
+  const body = JSON.stringify(bodyObject);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

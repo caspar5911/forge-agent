@@ -32,7 +32,13 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Git intent detection (explicit or LLM-based "smart" mode)
 - Multi-round clarification when requirements are ambiguous
 - Clarification proposals (Forge can propose best-guess answers and a plan)
-- JSON output retries + chunked update requests for reliability
+- Schema-first structured JSON outputs (auto), with repair fallback + silent retries
+- Two-call flow: machine JSON first, then a separate human summary
+- Chunked update requests for reliability on large edits
+- Plan-then-execute summaries (short plan shown before edits)
+- Self-verification pass after edits (flags unmet requirements)
+- Agent loop for fixes (diagnose -> edit -> re-test -> repeat)
+- Context-first editing (auto-snippets from relevant files)
 - Inline "Peek" panel showing steps, prompts, raw JSON payloads, diffs, and validation output (system prompts hidden; secrets redacted)
 
 **Limits**
@@ -42,6 +48,8 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - File edits require JSON payloads (no partial patch streaming)
 - Depth-limited workspace scan for large repos
 - Peek output truncates large payloads for safety
+- Some backends may not support schema-constrained decoding; Forge falls back to repair + retry
+- Planning/verification adds extra LLM calls (slower but more reliable)
 
 ## Quickstart (Local Setup)
 
@@ -107,6 +115,13 @@ Key settings:
 - `forge.clarifySuggestAnswers` / `forge.clarifyConfirmSuggestions`: control clarification proposals
 - `forge.gitIntentMode` / `forge.gitConfirmActions`: Git intent detection + confirmation
 - `forge.qaMinSources` / `forge.qaMaxFiles`: Q&A grounding thresholds
+- `forge.bestEffortFix`: enable guessy auto-fix (deps + missing files)
+- `forge.autoAddDependencies` / `forge.autoCreateMissingFiles` / `forge.autoInstallDependencies`: best-effort fix behavior
+
+Optional model routing (env vars):
+- `FORGE_LLM_MODEL_PLAN` (plan summaries)
+- `FORGE_LLM_MODEL_VERIFY` (verification pass)
+- `FORGE_LLM_MODEL_SUMMARY` (human summary)
 
 Environment variables:
 - `FORGE_LLM_ENDPOINT`
