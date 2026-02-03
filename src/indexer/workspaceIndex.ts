@@ -1,3 +1,4 @@
+/** Workspace symbol index for file targeting suggestions. */
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { harvestContext } from '../context';
@@ -18,6 +19,7 @@ export type WorkspaceIndex = {
 let currentIndex: WorkspaceIndex | null = null;
 let refreshTimer: NodeJS.Timeout | null = null;
 
+/** Start background indexing on file changes and saves. */
 export function startWorkspaceIndexing(context: vscode.ExtensionContext): void {
   scheduleRefresh(0);
 
@@ -28,10 +30,12 @@ export function startWorkspaceIndexing(context: vscode.ExtensionContext): void {
   context.subscriptions.push(onSave, onChange, onOpen);
 }
 
+/** Get the last computed workspace index, if available. */
 export function getWorkspaceIndex(): WorkspaceIndex | null {
   return currentIndex;
 }
 
+/** Debounce index refresh to avoid excessive work. */
 function scheduleRefresh(delayMs = 1500): void {
   if (refreshTimer) {
     clearTimeout(refreshTimer);
@@ -41,6 +45,7 @@ function scheduleRefresh(delayMs = 1500): void {
   }, delayMs);
 }
 
+/** Rebuild the workspace symbol index from the VS Code provider. */
 async function refreshIndex(): Promise<void> {
   const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
   const context = harvestContext();

@@ -1,3 +1,4 @@
+/** Task compressor: turns instructions into a plan or clarification questions. */
 import type { LLMConfig } from '../llm/config';
 import type { ChatCompletionResponse, ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
@@ -10,7 +11,7 @@ export type TaskPlan =
   | { kind: 'clarification'; questions: string[] }
   | { kind: 'plan'; steps: string[] };
 
-// Convert a short instruction into either questions or an ordered plan using the local LLM.
+/** Convert an instruction into questions or an ordered plan using the local LLM. */
 export async function compressTask(
   instruction: string,
   context: ProjectContext,
@@ -40,7 +41,7 @@ export async function compressTask(
   }
 }
 
-// Deterministic fallback when the LLM fails or returns invalid output.
+/** Deterministic fallback when the LLM fails or returns invalid output. */
 export function compressTaskLocal(instruction: string): TaskPlan {
   const trimmed = instruction.trim();
   if (!trimmed) {
@@ -95,6 +96,7 @@ export function compressTaskLocal(instruction: string): TaskPlan {
   return { kind: 'plan', steps };
 }
 
+/** Build the LLM prompt for task compression. */
 function buildMessages(instruction: string, context: ProjectContext): ChatMessage[] {
   const contextJson = JSON.stringify(context, null, 2);
 
@@ -113,6 +115,7 @@ function buildMessages(instruction: string, context: ProjectContext): ChatMessag
   ];
 }
 
+/** Parse and validate the task plan JSON from the LLM response. */
 function parseTaskPlan(response: ChatCompletionResponse): TaskPlan {
   const content = response.choices?.[0]?.message?.content?.trim();
   if (!content) {

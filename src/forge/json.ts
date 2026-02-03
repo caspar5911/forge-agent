@@ -1,9 +1,12 @@
+/** JSON extraction helpers for LLM responses. */
 import type { ChatCompletionResponse } from '../llm/client';
 
+/** Parse a JSON payload from the LLM response without validating shape. */
 export function extractJsonPayload(response: ChatCompletionResponse): { files?: unknown } {
   return parseJsonResponse(response) as { files?: unknown };
 }
 
+/** Parse and assert that the LLM response contains a JSON object. */
 export function extractJsonObject(response: ChatCompletionResponse): Record<string, unknown> {
   const parsed = parseJsonResponse(response);
   if (!parsed || typeof parsed !== 'object') {
@@ -12,6 +15,7 @@ export function extractJsonObject(response: ChatCompletionResponse): Record<stri
   return parsed as Record<string, unknown>;
 }
 
+/** Extract raw JSON from fenced or unfenced LLM content. */
 function parseJsonResponse(response: ChatCompletionResponse): unknown {
   const content = response.choices?.[0]?.message?.content?.trim();
   if (!content) {

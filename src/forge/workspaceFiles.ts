@@ -1,6 +1,8 @@
+/** Workspace file listing helpers. */
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** List workspace files with a depth and count cap, skipping common large folders. */
 export function listWorkspaceFiles(rootPath: string, maxDepth: number, maxFiles: number): string[] {
   const results: string[] = [];
   const stack: Array<{ dir: string; depth: number }> = [{ dir: rootPath, depth: 0 }];

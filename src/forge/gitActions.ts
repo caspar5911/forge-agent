@@ -1,3 +1,4 @@
+/** Git workflow + command routing for Forge. */
 import * as vscode from 'vscode';
 import type { ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
@@ -44,6 +45,7 @@ type GitAction =
   | { type: 'stash-apply'; ref?: string }
   | { type: 'stash-pop'; ref?: string };
 
+/** Run the post-edit Git workflow (status, stage, commit, optional push). */
 export async function maybeRunGitWorkflow(rootPath: string, output: vscode.OutputChannel): Promise<void> {
   output.appendLine(`[git] workflow root: ${rootPath}`);
   const config = vscode.workspace.getConfiguration('forge');
@@ -210,6 +212,7 @@ export async function maybeRunGitWorkflow(rootPath: string, output: vscode.Outpu
   }
 }
 
+/** Stage changes, optionally prompting for file selection. */
 export async function runGitStage(rootPath: string, output: vscode.OutputChannel): Promise<void> {
   output.appendLine(`[git] root: ${rootPath}`);
   if (!(await isGitRepo(rootPath))) {
@@ -255,6 +258,7 @@ export async function runGitStage(rootPath: string, output: vscode.OutputChannel
   }
 }
 
+/** Stage files and create a commit with an optional suggested message. */
 export async function runGitCommit(rootPath: string, output: vscode.OutputChannel): Promise<void> {
   output.appendLine(`[git] root: ${rootPath}`);
   if (!(await isGitRepo(rootPath))) {
@@ -335,6 +339,7 @@ export async function runGitCommit(rootPath: string, output: vscode.OutputChanne
   }
 }
 
+/** Push the current branch to a selected remote with confirmation. */
 export async function runGitPush(rootPath: string, output: vscode.OutputChannel): Promise<void> {
   output.appendLine(`[git] root: ${rootPath}`);
   if (!(await isGitRepo(rootPath))) {
@@ -379,6 +384,7 @@ export async function runGitPush(rootPath: string, output: vscode.OutputChannel)
   }
 }
 
+/** Normalize `git status --porcelain` output into status/path pairs. */
 function parseGitStatusLines(lines: string[]): Array<{ status: string; path: string }> {
   return lines
     .map((line) => line.trimEnd())
@@ -394,6 +400,7 @@ function parseGitStatusLines(lines: string[]): Array<{ status: string; path: str
     .filter((entry) => entry.path.length > 0);
 }
 
+/** Detect requested Git operations from a natural-language instruction. */
 export function detectGitActions(instruction: string): GitAction[] {
   const text = instruction.toLowerCase();
   const hasGitContext =
@@ -538,6 +545,7 @@ export function detectGitActions(instruction: string): GitAction[] {
   return actions;
 }
 
+/** Execute one or more detected Git actions with safety checks. */
 export async function runGitActions(
   actions: GitAction[],
   rootPath: string,
@@ -756,6 +764,7 @@ export async function runGitActions(
   }
 }
 
+/** Ask the LLM to generate a concise commit message from diff stats. */
 async function generateCommitMessage(
   diffStat: string,
   files: string[],
@@ -774,6 +783,7 @@ async function generateCommitMessage(
   }
 }
 
+/** Build the prompt used to generate a commit message. */
 function buildCommitMessageMessages(diffStat: string, files: string[], style: string): ChatMessage[] {
   const fileList = files.slice(0, 30).join(', ');
   const styleNote =

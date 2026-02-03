@@ -1,3 +1,4 @@
+/** File update orchestration for single- and multi-file edits. */
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -16,6 +17,7 @@ import type { ForgeUiApi } from '../ui/api';
 
 let lastManualSelection: string[] = [];
 
+/** Request a full-file update for a single file from the LLM. */
 export async function requestSingleFileUpdate(
   fullPath: string,
   relativePath: string,
@@ -67,6 +69,7 @@ export async function requestSingleFileUpdate(
   };
 }
 
+/** Request file selection and updates for multi-file instructions. */
 export async function requestMultiFileUpdate(
   rootPath: string,
   instruction: string,
@@ -250,6 +253,7 @@ export async function requestMultiFileUpdate(
   return result;
 }
 
+/** Write updated file contents to disk and report success/failure. */
 export function applyFileUpdates(
   updates: FileUpdate[],
   output: vscode.OutputChannel,
@@ -269,6 +273,7 @@ export function applyFileUpdates(
   }
 }
 
+/** Run an auto-fix loop using validation output as extra context. */
 export async function attemptAutoFix(
   rootPath: string,
   instruction: string,
@@ -314,6 +319,7 @@ export async function attemptAutoFix(
   return applyFileUpdates(updates, output, panelApi);
 }
 
+/** Extract updated file content from an LLM response, rejecting diffs. */
 function extractUpdatedFile(response: { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } }): string {
   const content = response.choices?.[0]?.message?.content?.trim();
   if (!content) {
@@ -331,10 +337,12 @@ function extractUpdatedFile(response: { choices?: Array<{ message?: { content?: 
   return raw;
 }
 
+/** Heuristic: detect a unified diff payload. */
 function isLikelyDiff(text: string): boolean {
   return text.includes('--- ') && text.includes('+++ ') && text.includes('@@');
 }
 
+/** Build the prompt for a single-file full-content update. */
 function buildFullFileMessages(
   instruction: string,
   relativePath: string,
@@ -367,10 +375,12 @@ function buildFullFileMessages(
   ];
 }
 
+/** Decide whether to allow comment additions based on the instruction. */
 function shouldAllowComments(instruction: string): boolean {
   return /\b(comment|comments|document|documentation|explain|explanation)\b/i.test(instruction);
 }
 
+/** Resolve and validate a workspace-relative file path. */
 function resolveWorkspacePath(
   rootPath: string,
   candidate: string
@@ -385,10 +395,12 @@ function resolveWorkspacePath(
   return { fullPath, relativePath };
 }
 
+/** Normalize paths for case-insensitive matching. */
 function normalizePathForMatch(value: string): string {
   return value.replace(/\\/g, '/').toLowerCase();
 }
 
+/** Build the prompt for selecting files relevant to the instruction. */
 function buildFileSelectionMessages(
   instruction: string,
   filesList: string[],
@@ -440,6 +452,7 @@ function buildFileSelectionMessages(
   ];
 }
 
+/** Build the prompt for multi-file full-content updates. */
 function buildMultiFileUpdateMessages(
   instruction: string,
   files: Array<{ path: string; content: string }>,
@@ -474,6 +487,7 @@ function buildMultiFileUpdateMessages(
   ];
 }
 
+/** Ask the UI (panel or view) to choose files before invoking the LLM. */
 async function requestUserFileSelection(
   filesList: string[],
   preselected: string[],
@@ -489,6 +503,7 @@ async function requestUserFileSelection(
   return null;
 }
 
+/** Generate file updates based on a user-selected file list. */
 async function buildUpdatesFromUserSelection(
   selectedFiles: string[],
   rootPath: string,
@@ -584,6 +599,7 @@ async function buildUpdatesFromUserSelection(
   return result;
 }
 
+/** Suggest candidate files based on instruction keywords and symbol index. */
 function suggestFilesForInstruction(
   instruction: string,
   filesList: string[],
@@ -620,6 +636,7 @@ function suggestFilesForInstruction(
   return Array.from(suggestions).slice(0, 12);
 }
 
+/** Wrap an existing prompt with a strict JSON-only system instruction. */
 function buildStrictJsonRetryMessages(messages: ChatMessage[]): ChatMessage[] {
   const strictSystem: ChatMessage = {
     role: 'system',

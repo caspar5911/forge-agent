@@ -1,3 +1,4 @@
+/** Validation command discovery and execution utilities. */
 import { spawn } from 'child_process';
 import type { OutputChannel } from 'vscode';
 
@@ -6,6 +7,7 @@ export type ValidationOption = {
   command: string;
 };
 
+/** Build validation options from package.json scripts and package manager. */
 export function buildValidationOptions(
   packageJson: unknown,
   packageManager: string | null
@@ -39,6 +41,7 @@ export type CommandResult = {
   output: string;
 };
 
+/** Run a shell command and stream output to the VS Code output channel. */
 export function runCommand(command: string, cwd: string, output: OutputChannel): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     output.appendLine(`> ${command}`);
@@ -60,6 +63,7 @@ export function runCommand(command: string, cwd: string, output: OutputChannel):
   });
 }
 
+/** Map a package manager to the correct script execution prefix. */
 function buildScriptPrefix(packageManager: string | null): string {
   if (packageManager === 'yarn') {
     return 'yarn';

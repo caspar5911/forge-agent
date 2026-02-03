@@ -3,137 +3,49 @@
 Forge is an on-prem, agentic coding assistant built as a VS Code extension. It turns short instructions into safe, validated code changes using a local LLM and keeps control explicit and auditable.
 
 ## Status
-- Phase 0-6: complete (UI + workflows + Git Manager)
+- Phase 0-6 complete (UI + workflows + Git Manager)
+- Phase 7: UX polish + hardening (planned)
 
-## What Forge Does
+## Overview
 - VS Code UI panel + sidebar view
-- Single-file or multi-file edits
-- File picker for multi-file confirmation
-- Inline diff preview in chat
-- Action + purpose summaries before edits
-- Automatic validation and auto-fix retries
-- Q&A about project context
-- Optional Git workflow (explicit approval only)
-- Dedicated Git commands (stage/commit/push)
-- Local vLLM (OpenAI-compatible) integration
+- Single-file or multi-file edits with explicit selection
+- Inline diff preview and action/purpose summaries
+- Automatic validation with optional auto-fix retries
+- Q&A about project context and file contents
+- Optional Git workflow (stage/commit/push) with approvals
+- Local OpenAI-compatible LLM integration (vLLM tested)
 
-## Capabilities and Limits
-Capabilities:
+## Architecture
+- `src/extension.ts`: command wiring, UI registration, and lifecycle hooks
+- `src/extension/runtime.ts`: run orchestration and state management
+- `src/extension/lifecycle.ts`: settings sync + keep-alive
+- `src/forge/`: intent detection, file selection, updates, validation, Git actions
+- `src/ui/`: webview UI, panel, sidebar view
+- `src/llm/`: OpenAI-compatible HTTP client
+- `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: local context, symbol index, validation, Git helpers
+
+## Capabilities
 - Edit files via LLM-generated full-file updates
 - Select targets automatically or via file picker
 - Validate changes and attempt auto-fixes
 - Answer project questions using harvested context
 - Stage, commit, and push with explicit approval
-- Commit message suggestions (optional)
+- Optional commit message suggestions
 
-Limits:
+## Limits
 - No hidden Git actions
 - No background code execution
 - No file edits without explicit approval (unless skipConfirmations is enabled)
 - File edits require JSON payloads (no partial patch streaming)
 - Depth-limited workspace scan for large repos
 
-## Technical Specifications
-- Architecture: VS Code extension + webview UI + local LLM server
-- LLM API: OpenAI-compatible `/v1/chat/completions`
-- Data flow: prompt -> file selection -> update generation -> apply -> validation
-- OS: Windows + WSL2 (recommended)
-- GPU: NVIDIA with WSL2 GPU support (32 GB VRAM recommended for 32B models)
-- Config: VS Code settings + environment variables
-- Security: local-only, no telemetry, no external network calls unless configured
-
-## Example Prompts
-- "Add comments to App.tsx"
-- "Remove unused imports in Timesheet.tsx"
-- "Fix validation errors for this project"
-- "How many files are in this repo?"
-- "Show me the content of src/main.tsx"
-
-## Performance Notes
-- First run includes model warmup (can take minutes)
-- Subsequent requests are faster if the model stays loaded
-- Large multi-file updates can be slower due to JSON output size
-
-## Model Compatibility
-Tested:
-- Qwen/Qwen2.5-Coder-32B-Instruct-AWQ (vLLM)
-
-Expected:
-- OpenAI-compatible chat API
-- JSON-safe outputs for update payloads
-
-## Security and Privacy
-- Runs fully on-prem
-- No telemetry by default
-- API keys stored in VS Code settings or environment variables
-
-## Known Issues / Limitations
-- JSON payloads can fail if the model emits invalid JSON
-- Very large diffs may slow down LLM responses
-- File selection relies on file list + symbol index (no semantic search yet)
-
-## FAQ
-**Why does Forge ask me to confirm files?**  
-To avoid unintended edits and keep changes explicit.
-
-**Why does validation run automatically?**  
-To ensure changes compile/test successfully. You can disable autoValidation.
-
-**Why are multi-file edits slower?**  
-The LLM must generate full file contents and JSON for each file.
-
-## Release Notes
-v0.1
-- Phase 0-5 complete
-- UI panel + sidebar
-- Multi-file edits + file picker
-- Validation + auto-fix
-
-## Roadmap (Phases)
-Phase 0 - Foundation
-- Extension shell + command wiring
-- Local LLM connectivity
-- Safe single-file apply
-
-Phase 1 - Context Harvester
-- Workspace root detection
-- Depth-limited file list
-- package.json parsing
-- Framework + package manager detection
-- Active file detection
-
-Phase 2 - Task Compressor
-- Turn vague prompts into explicit steps
-- Ask clarifying questions when ambiguous
-
-Phase 3 - Planner
-- Choose the next safe action
-- Emit strict tool calls (read, diff, validate)
-
-Phase 4 - Validation + Git Integration
-- Run build/test/typecheck
-- Optional auto-fix loop
-- Git commit flow with user approval
-- Workspace symbol index for file targeting
-
-Phase 5 - UX + Polish
-- UI panel and sidebar
-- File picker modal
-- Status steps + shortcuts
-- Cleaner logs
-
-Phase 6 - Git Manager
-- Stage/commit/push commands
-- Optional auto message suggestion
-- Optional auto push (only when skipConfirmations is enabled)
-
-## Local Setup
+## Quickstart (Local Setup)
 
 ### 1) Prereqs
 - Node.js 18+
 - VS Code
 - Docker Desktop (WSL2 engine enabled)
-- NVIDIA drivers with WSL2 GPU support
+- NVIDIA drivers with WSL2 GPU support (32 GB VRAM recommended for 32B models)
 
 ### 2) Install
 ```bash
@@ -260,6 +172,13 @@ npm run compile
 4) Review inline diff preview.
 5) Apply changes and optionally run validation.
 
+Example prompts:
+- "Add comments to App.tsx"
+- "Remove unused imports in Timesheet.tsx"
+- "Fix validation errors for this project"
+- "How many files are in this repo?"
+- "Show me the content of src/main.tsx"
+
 ## Git Commands
 - Forge: Git Stage
 - Forge: Git Commit
@@ -273,24 +192,28 @@ npm run compile
 - Ctrl/Cmd+L: clear
 - Ctrl/Cmd+/: focus prompt
 
-## Project Structure
-- src/extension.ts
-- src/context/
-- src/compressor/
-- src/planner/
-- src/llm/
-- src/validation/
-- src/git/
-- src/indexer/
-- src/ui/
-- docker-compose.yml
-- scripts/start-vllm.ps1
+## Performance Notes
+- First run includes model warmup (can take minutes)
+- Subsequent requests are faster if the model stays loaded
+- Large multi-file updates can be slower due to JSON output size
 
-## Safety Rules
-- Multi-file edits require file selection
-- No hidden Git actions
-- Confirmations are optional (settings)
-- Comments are only added when explicitly requested
+## Model Compatibility
+Tested:
+- Qwen/Qwen2.5-Coder-32B-Instruct-AWQ (vLLM)
+
+Expected:
+- OpenAI-compatible chat API
+- JSON-safe outputs for update payloads
+
+## Security and Privacy
+- Runs fully on-prem
+- No telemetry by default
+- API keys stored in VS Code settings or environment variables
+
+## Known Issues / Limitations
+- JSON payloads can fail if the model emits invalid JSON
+- Very large diffs may slow down LLM responses
+- File selection relies on file list + symbol index (no semantic search yet)
 
 ## LLM Usage Policy
 - Context Harvester: NO
@@ -305,5 +228,49 @@ npm run compile
 - If the model fails to start, verify GPU access in Docker and set HUGGING_FACE_HUB_TOKEN.
 - If the UI seems stuck, use Esc (stop) and check Output: "Forge".
 
-## Next
-- Phase 7: UX polish + hardening
+## Roadmap (Phases)
+Phase 0 - Foundation
+- Extension shell + command wiring
+- Local LLM connectivity
+- Safe single-file apply
+
+Phase 1 - Context Harvester
+- Workspace root detection
+- Depth-limited file list
+- package.json parsing
+- Framework + package manager detection
+- Active file detection
+
+Phase 2 - Task Compressor
+- Turn vague prompts into explicit steps
+- Ask clarifying questions when ambiguous
+
+Phase 3 - Planner
+- Choose the next safe action
+- Emit strict tool calls (read, diff, validate)
+
+Phase 4 - Validation + Git Integration
+- Run build/test/typecheck
+- Optional auto-fix loop
+- Git commit flow with user approval
+- Workspace symbol index for file targeting
+
+Phase 5 - UX + Polish
+- UI panel and sidebar
+- File picker modal
+- Status steps + shortcuts
+- Cleaner logs
+
+Phase 6 - Git Manager
+- Stage/commit/push commands
+- Optional auto message suggestion
+- Optional auto push (only when skipConfirmations is enabled)
+
+Phase 7 - UX polish + hardening
+
+## Release Notes
+v0.1
+- Phase 0-6 complete
+- UI panel + sidebar
+- Multi-file edits + file picker
+- Validation + auto-fix

@@ -1,3 +1,4 @@
+/** Intent detection and clarification helpers. */
 import * as vscode from 'vscode';
 import { harvestContext, type ProjectContext } from '../context';
 import type { ChatMessage } from '../llm/client';
@@ -12,14 +13,17 @@ type DisambiguationOption = { label: string; instruction: string };
 
 let pendingDisambiguation: DisambiguationOption[] | null = null;
 
+/** Read the currently queued disambiguation options, if any. */
 export function getPendingDisambiguation(): DisambiguationOption[] | null {
   return pendingDisambiguation;
 }
 
+/** Clear any pending disambiguation options. */
 export function clearPendingDisambiguation(): void {
   pendingDisambiguation = null;
 }
 
+/** Merge recent chat history into a new message list with size limits. */
 export function mergeChatHistory(history: ChatHistoryItem[] | undefined, messages: ChatMessage[]): ChatMessage[] {
   if (!history || history.length === 0) {
     return messages;
@@ -47,6 +51,7 @@ export function mergeChatHistory(history: ChatHistoryItem[] | undefined, message
   return trimmed.concat(messages);
 }
 
+/** Determine whether the instruction is an edit, question, or fix request. */
 export async function determineIntent(
   instruction: string,
   output: vscode.OutputChannel,
@@ -75,6 +80,7 @@ export async function determineIntent(
   return classifyIntent(instruction);
 }
 
+/** Rule-based fallback intent classifier. */
 export function classifyIntent(instruction: string): Intent {
   const trimmed = instruction.trim();
   const lowered = trimmed.toLowerCase();
@@ -105,6 +111,7 @@ export function classifyIntent(instruction: string): Intent {
   return 'edit';
 }
 
+/** Detect casual chat prompts that should be treated as questions. */
 export function isCasualChatPrompt(lowered: string): boolean {
   if (lowered.length === 0) {
     return true;
@@ -123,6 +130,7 @@ export function isCasualChatPrompt(lowered: string): boolean {
   return false;
 }
 
+/** Detect questions that ask to show file contents. */
 export function isFileReadQuestion(lowered: string): boolean {
   if (/\b(show|open|read|view|display)\b/.test(lowered)) {
     return /\bfile|files|content\b/.test(lowered) || /[a-z0-9_-]+\.(ts|tsx|js|jsx|json|md|css|html)\b/.test(lowered);
@@ -130,6 +138,7 @@ export function isFileReadQuestion(lowered: string): boolean {
   return /\bwhat is in\b/.test(lowered);
 }
 
+/** Build default assumptions to proceed when clarification is required. */
 export function buildDefaultAssumptions(
   clarification: string[],
   activeRelativePath: string | null
@@ -159,6 +168,7 @@ export function buildDefaultAssumptions(
   return assumptions;
 }
 
+/** Ask the LLM for clarification questions when the instruction is ambiguous. */
 export async function maybeClarifyInstruction(
   instruction: string,
   rootPath: string,
@@ -194,6 +204,7 @@ export async function maybeClarifyInstruction(
   }
 }
 
+/** Build the prompt used to request clarification questions. */
 function buildClarificationMessages(
   instruction: string,
   context: ProjectContext,
@@ -233,6 +244,7 @@ function buildClarificationMessages(
   ];
 }
 
+/** Ask the LLM to propose multiple disambiguation options. */
 export async function maybePickDisambiguation(
   instruction: string,
   rootPath: string,
@@ -282,6 +294,7 @@ export async function maybePickDisambiguation(
   }
 }
 
+/** Parse a numeric disambiguation choice from user input. */
 export function parseDisambiguationPick(input: string, max: number): number | null {
   const trimmed = input.trim();
   if (!/^\d+$/.test(trimmed)) {
@@ -294,6 +307,7 @@ export function parseDisambiguationPick(input: string, max: number): number | nu
   return index - 1;
 }
 
+/** Build the prompt used to generate disambiguation options. */
 function buildDisambiguationOptionsMessages(
   instruction: string,
   context: ProjectContext,
@@ -331,6 +345,7 @@ function buildDisambiguationOptionsMessages(
   ];
 }
 
+/** Build the prompt for intent classification. */
 function buildIntentMessages(instruction: string): ChatMessage[] {
   return [
     {

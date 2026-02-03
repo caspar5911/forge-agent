@@ -1,3 +1,4 @@
+/** Validation flow orchestration and auto-fix support. */
 import * as vscode from 'vscode';
 import { harvestContext } from '../context';
 import { buildValidationOptions, runCommand, type ValidationOption } from '../validation';
@@ -13,6 +14,7 @@ export type ValidationResult = {
   label: string | null;
 };
 
+/** Optionally run a validation command based on settings and package scripts. */
 export async function maybeRunValidation(rootPath: string, output: vscode.OutputChannel): Promise<ValidationResult> {
   const config = vscode.workspace.getConfiguration('forge');
   const autoValidation = config.get<boolean>('autoValidation') !== false;
@@ -64,6 +66,7 @@ export async function maybeRunValidation(rootPath: string, output: vscode.Output
   }
 }
 
+/** Run validation first, then attempt auto-fixes if enabled. */
 export async function runValidationFirstFix(
   rootPath: string,
   instruction: string,
@@ -114,6 +117,7 @@ export async function runValidationFirstFix(
   logOutput(output, panelApi, 'Validation still failing after auto-fix attempts.');
 }
 
+/** Choose the highest-priority validation option. */
 function pickBestValidationOption(options: ValidationOption[]): ValidationOption | null {
   const priority = ['test', 'typecheck', 'lint', 'build'];
   for (const label of priority) {

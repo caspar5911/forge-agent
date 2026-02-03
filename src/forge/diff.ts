@@ -1,3 +1,6 @@
+/** Diff helpers for summaries and inline previews. */
+
+/** Summarize line-level changes between two strings. */
 export function getLineChangeSummary(original: string, updated: string, label: string): string | null {
   const originalLines = original.split(/\r?\n/);
   const updatedLines = updated.split(/\r?\n/);
@@ -12,11 +15,13 @@ export function getLineChangeSummary(original: string, updated: string, label: s
   return `Changed ${changed} lines (+${added} / -${removed}) in ${label}.`;
 }
 
+/** Compute LCS length for two line arrays. */
 export function longestCommonSubsequenceLength(a: string[], b: string[]): number {
   const table = buildLcsTable(a, b);
   return table[a.length][b.length];
 }
 
+/** Build a capped inline diff preview with a label header. */
 export function buildInlineDiffPreview(original: string, updated: string, label: string): string[] | null {
   const originalLines = original.split(/\r?\n/);
   const updatedLines = updated.split(/\r?\n/);
@@ -36,6 +41,7 @@ export function buildInlineDiffPreview(original: string, updated: string, label:
   return [`Diff preview (${label}):`, ...sliced];
 }
 
+/** Build a simple line diff using LCS backtracking. */
 export function buildLineDiff(originalLines: string[], updatedLines: string[]): string[] {
   const table = buildLcsTable(originalLines, updatedLines);
   const diff: string[] = [];
@@ -59,6 +65,7 @@ export function buildLineDiff(originalLines: string[], updatedLines: string[]): 
   return diff.reverse();
 }
 
+/** Build the LCS dynamic programming table for two line arrays. */
 export function buildLcsTable(a: string[], b: string[]): number[][] {
   const rows = a.length + 1;
   const cols = b.length + 1;
@@ -77,6 +84,7 @@ export function buildLcsTable(a: string[], b: string[]): number[][] {
   return dp;
 }
 
+/** Expand a diff into context windows separated by ellipses. */
 export function buildDiffPreviewWithContext(diff: string[], contextLines: number): string[] {
   const changedIndexes: number[] = [];
   for (let i = 0; i < diff.length; i += 1) {

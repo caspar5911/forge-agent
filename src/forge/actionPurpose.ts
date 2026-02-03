@@ -1,9 +1,11 @@
+/** Action-purpose summarizer for proposed file edits. */
 import type { OutputChannel } from 'vscode';
 import type { ChatMessage } from '../llm/client';
 import { callChatCompletion, callChatCompletionStream } from '../llm/client';
 import { isAbortError, logOutput } from './logging';
 import type { ForgeUiApi } from '../ui/api';
 
+/** Ask the LLM to summarize actions as "Action - Purpose" bullets and log them. */
 export async function logActionPurpose(
   instruction: string,
   files: string[],
@@ -53,6 +55,7 @@ export async function logActionPurpose(
   }
 }
 
+/** Build the prompt for action-purpose summary generation. */
 function buildActionPurposeMessages(instruction: string, files: string[]): ChatMessage[] {
   const fileList = files.slice(0, 20).join(', ');
   return [

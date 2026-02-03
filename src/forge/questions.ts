@@ -1,3 +1,4 @@
+/** Question answering and project summary helpers. */
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -11,6 +12,7 @@ import { mergeChatHistory } from './intent';
 import type { ChatHistoryItem } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
+/** Answer user questions using local context and the LLM when needed. */
 export async function answerQuestion(
   instruction: string,
   rootPath: string,
@@ -190,6 +192,7 @@ export async function answerQuestion(
   }
 }
 
+/** Build the prompt used to answer general questions. */
 function buildQuestionMessages(
   instruction: string,
   context: ProjectContext,
@@ -229,6 +232,7 @@ function buildQuestionMessages(
   ];
 }
 
+/** Detect project overview questions that require summarization. */
 function isProjectSummaryQuestion(lowered: string): boolean {
   return (
     lowered.includes('what is this project') ||
@@ -241,6 +245,7 @@ function isProjectSummaryQuestion(lowered: string): boolean {
   );
 }
 
+/** Build a single payload of prioritized file content for summarization. */
 function buildProjectSummaryPayload(
   rootPath: string,
   filesList: string[],
@@ -300,6 +305,7 @@ function buildProjectSummaryPayload(
   return { payload: parts.join('\n---\n'), truncated };
 }
 
+/** Build chunked payloads when the summary would exceed token limits. */
 function buildProjectSummaryChunks(
   rootPath: string,
   filesList: string[],
@@ -391,6 +397,7 @@ function buildProjectSummaryChunks(
   return { chunks, truncated };
 }
 
+/** Rank files by likely importance for a project summary. */
 function prioritizeProjectFiles(filesList: string[]): string[] {
   const priorityPrefixes = [
     'readme',
@@ -427,6 +434,7 @@ function prioritizeProjectFiles(filesList: string[]): string[] {
     .map((entry) => entry.file);
 }
 
+/** Build the prompt for single-pass project summarization. */
 function buildProjectSummaryMessages(instruction: string, payload: string): ChatMessage[] {
   return [
     {
@@ -443,6 +451,7 @@ function buildProjectSummaryMessages(instruction: string, payload: string): Chat
   ];
 }
 
+/** Build the prompt for a single project summary chunk. */
 function buildProjectChunkMessages(payload: string, index: number, total: number): ChatMessage[] {
   return [
     {
@@ -458,6 +467,7 @@ function buildProjectChunkMessages(payload: string, index: number, total: number
   ];
 }
 
+/** Build the prompt that combines chunk summaries into a final answer. */
 function buildProjectSummaryFromChunksMessages(instruction: string, chunks: string[]): ChatMessage[] {
   const joined = chunks.map((chunk, index) => `Chunk ${index + 1} summary:\n${chunk}`).join('\n\n');
   return [
@@ -474,6 +484,7 @@ function buildProjectSummaryFromChunksMessages(instruction: string, chunks: stri
   ];
 }
 
+/** Fallback detector for file-read questions. */
 function isFileReadQuestion(lowered: string): boolean {
   if (/\b(show|open|read|view|display)\b/.test(lowered)) {
     return true;

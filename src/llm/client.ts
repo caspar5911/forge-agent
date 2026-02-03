@@ -1,3 +1,4 @@
+/** Minimal OpenAI-compatible chat client over HTTP/S. */
 import * as http from 'http';
 import * as https from 'https';
 import type { LLMConfig, ResolvedLLMConfig } from './config';
@@ -10,6 +11,7 @@ export type ChatCompletionResponse = {
   error?: { message?: string };
 };
 
+/** Ping the LLM /models endpoint to keep it warm. */
 export function pingLLM(config: LLMConfig = {}): Promise<void> {
   const resolved = resolveLLMConfig(config);
   const url = new URL(resolved.endpoint.replace(/\/$/, '') + '/models');
@@ -38,6 +40,7 @@ export function pingLLM(config: LLMConfig = {}): Promise<void> {
   });
 }
 
+/** Call a non-streaming chat completion request. */
 export async function callChatCompletion(
   config: LLMConfig,
   messages: ChatMessage[],
@@ -47,6 +50,7 @@ export async function callChatCompletion(
   return requestChatCompletion(resolved, messages, signal);
 }
 
+/** Call a streaming chat completion request and emit deltas. */
 export async function callChatCompletionStream(
   config: LLMConfig,
   messages: ChatMessage[],
@@ -57,6 +61,7 @@ export async function callChatCompletionStream(
   return requestChatCompletionStream(resolved, messages, onDelta, signal);
 }
 
+/** Issue the HTTP request for a non-streaming chat completion. */
 function requestChatCompletion(
   config: ResolvedLLMConfig,
   messages: ChatMessage[],
@@ -128,6 +133,7 @@ function requestChatCompletion(
   });
 }
 
+/** Issue the HTTP request for a streaming chat completion. */
 function requestChatCompletionStream(
   config: ResolvedLLMConfig,
   messages: ChatMessage[],

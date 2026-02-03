@@ -1,3 +1,4 @@
+/** Planner: chooses the next safe tool call from a task plan. */
 // Node path utilities for safe relative path handling.
 import * as path from 'path';
 import type { LLMConfig } from '../llm/config';
@@ -37,7 +38,7 @@ export type PlannerInput = {
   previousResults?: ToolResult[];
 };
 
-// Pick the next single safe tool call based on the plan step using the local LLM.
+/** Pick the next single safe tool call based on the plan step using the local LLM. */
 export async function nextToolCall(
   input: PlannerInput,
   config: LLMConfig = {}
@@ -53,7 +54,7 @@ export async function nextToolCall(
   }
 }
 
-// Deterministic fallback planner logic.
+/** Deterministic fallback planner logic. */
 export function nextToolCallLocal(input: PlannerInput): ToolCall {
   const previousResults = input.previousResults ?? [];
   const { plan, context } = input;
@@ -97,7 +98,7 @@ export function nextToolCallLocal(input: PlannerInput): ToolCall {
   return { tool: 'request_diff' };
 }
 
-// Try to resolve a file mentioned in the plan step.
+/** Try to resolve a file mentioned in the plan step. */
 function pickFileFromStep(step: string, context: ProjectContext): string | null {
   const files = (context.files ?? []).map((file) => file.replace(/\\/g, '/'));
   const tokens = step.match(/[A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+/g) ?? [];
@@ -130,7 +131,7 @@ function pickFileFromStep(step: string, context: ProjectContext): string | null 
   return null;
 }
 
-// Convert an absolute file path to a workspace-relative path when possible.
+/** Convert an absolute file path to a workspace-relative path when possible. */
 function toRelativeIfPossible(filePath: string | null, rootPath: string | null): string | null {
   if (!filePath) {
     return null;
@@ -145,7 +146,7 @@ function toRelativeIfPossible(filePath: string | null, rootPath: string | null):
   return relative;
 }
 
-// Pick a validation command based on the step and package.json scripts.
+/** Pick a validation command based on the step and package.json scripts. */
 function pickValidationCommand(stepLower: string, context: ProjectContext): string | null {
   const pkg = context.packageJson;
   if (!pkg || typeof pkg !== 'object') {
@@ -192,6 +193,7 @@ function pickValidationCommand(stepLower: string, context: ProjectContext): stri
   return `npm run ${scriptName}`;
 }
 
+/** Build the LLM prompt for selecting the next tool call. */
 function buildMessages(input: PlannerInput): ChatMessage[] {
   const { plan, context } = input;
   const previousResults = input.previousResults ?? [];
@@ -221,6 +223,7 @@ function buildMessages(input: PlannerInput): ChatMessage[] {
   ];
 }
 
+/** Parse and validate a tool call JSON from the LLM response. */
 function parseToolCall(response: ChatCompletionResponse): ToolCall {
   const content = response.choices?.[0]?.message?.content?.trim();
   if (!content) {

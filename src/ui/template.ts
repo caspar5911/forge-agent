@@ -1,5 +1,7 @@
+/** HTML template for the Forge webview UI. */
 import * as vscode from 'vscode';
 
+/** Generate the Forge webview HTML with CSP and script nonce. */
 export function getForgeHtml(webview: vscode.Webview): string {
   const nonce = getNonce();
   const csp =
@@ -645,6 +647,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
       let streamMessage = null;
       let streamBuffer = '';
 
+      // Ensure empty-state hint is visible when no messages exist.
       const ensureEmptyState = () => {
         if (!emptyState) {
           emptyState = document.createElement('div');
@@ -661,6 +664,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       };
 
+      // Toggle empty-state hint as messages are added/cleared.
       const updateEmptyState = () => {
         if (chat.children.length === 0) {
           ensureEmptyState();
@@ -671,6 +675,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       };
 
+      // Classify assistant messages into display styles.
       const classifyAssistantMessage = (text) => {
         const lower = text.toLowerCase();
         if (lower.includes('error') || lower.includes('failed')) {
@@ -682,6 +687,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         return 'assistant';
       };
 
+      // Update the step indicator in the UI.
       const setStep = (key) => {
         if (!steps) return;
         const items = steps.querySelectorAll('.step');
@@ -694,12 +700,14 @@ export function getForgeHtml(webview: vscode.Webview): string {
         });
       };
 
+      // Escape HTML for safe rendering.
       const escapeHtml = (value) =>
         value
           .replace(/&/g, '&amp;')
           .replace(/</g, '&lt;')
           .replace(/>/g, '&gt;');
 
+      // Convert simple markdown inline styles to HTML.
       const formatInline = (value) => {
         const tick = String.fromCharCode(96);
         const codeRegex = new RegExp(tick + '([^' + tick + ']+)' + tick, 'g');
@@ -717,6 +725,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           .join('');
       };
 
+      // Apply lightweight syntax highlighting to code blocks.
       const highlightCode = (value) => {
         const escaped = escapeHtml(value);
         const withComments = escaped
@@ -744,6 +753,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           .join('');
       };
 
+      // Render limited markdown to HTML for chat bubbles.
       const renderMarkdown = (value) => {
         const escaped = escapeHtml(value);
         const lines = escaped.split(/\r?\n/);
@@ -758,6 +768,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         const tick = String.fromCharCode(96);
         const fence = tick + tick + tick;
 
+        // Close any open list containers.
         const closeLists = () => {
           if (inUl) {
             html += '</ul>';
@@ -769,6 +780,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
           }
         };
 
+        // Flush buffered table rows into an HTML table.
         const flushTable = () => {
           if (!inTable || tableBuffer.length === 0) {
             inTable = false;
@@ -898,6 +910,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         return html;
       };
 
+      // Show a transient toast notification.
       const showToast = (text) => {
         if (!toast) return;
         toast.textContent = text;
@@ -905,6 +918,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         setTimeout(() => toast.classList.remove('show'), 900);
       };
 
+      // Copy text to clipboard with a fallback for older APIs.
       const copyText = async (text) => {
         if (!text) return;
         try {
@@ -929,6 +943,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       };
 
+      // Add a copy button to a message or diff block.
       const attachCopyButton = (element, getText) => {
         const button = document.createElement('button');
         button.className = 'copy-btn';
@@ -942,6 +957,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         element.appendChild(button);
       };
 
+      // Append a chat message bubble and update history.
       const addMessage = (role, text) => {
         if (!text) return;
         if (streamMessage) {
@@ -966,6 +982,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       };
 
+      // Append a diff block to the chat view.
       const addDiff = (lines) => {
         if (!lines || !lines.length) return;
         if (streamMessage) {
@@ -992,6 +1009,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         updateEmptyState();
       };
 
+      // Handle run/stop button click.
       run.addEventListener('click', () => {
         const text = prompt.value.trim();
         if (run.dataset.mode === 'stop') {
@@ -1016,6 +1034,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         vscode.postMessage({ type: 'run', text, history: chatHistory });
       });
 
+      // Submit on Enter, allow newline with Shift+Enter.
       prompt.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
@@ -1023,6 +1042,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       });
 
+      // Global keyboard shortcuts for stop/clear/focus.
       window.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && run.dataset.mode === 'stop') {
           event.preventDefault();
@@ -1038,6 +1058,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       });
 
+      // Clear the chat and reset UI state.
       clear.addEventListener('click', () => {
         prompt.value = '';
         status.textContent = 'Idle';
@@ -1050,6 +1071,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         vscode.postMessage({ type: 'clear' });
       });
 
+      // Handle messages from the extension host.
       window.addEventListener('message', (event) => {
         const message = event.data;
         if (message.type === 'status') {
@@ -1130,6 +1152,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
       });
 
+      // Render the file selection list and selection counts.
       const renderFileList = (files) => {
         fileList.textContent = '';
         const fragment = document.createDocumentFragment();
@@ -1151,17 +1174,20 @@ export function getForgeHtml(webview: vscode.Webview): string {
         updateCount();
       };
 
+      // Update selected file count in the modal.
       const updateCount = () => {
         const selected = fileList.querySelectorAll('input[type="checkbox"]:checked').length;
         fileCount.textContent = selected + ' selected';
       };
 
+      // Filter the file list as the user types.
       fileSearch.addEventListener('input', () => {
         const query = fileSearch.value.trim().toLowerCase();
         const filtered = currentFiles.filter((file) => file.toLowerCase().includes(query));
         renderFileList(filtered);
       });
 
+      // Apply selected files and close the modal.
       fileApply.addEventListener('click', () => {
         const selected = Array.from(fileList.querySelectorAll('input[type="checkbox"]:checked'))
           .map((input) => input.value);
@@ -1170,6 +1196,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
         setStep('update');
       });
 
+      // Cancel file selection and close the modal.
       fileCancel.addEventListener('click', () => {
         fileModal.classList.remove('show');
         vscode.postMessage({ type: 'fileSelectionResult', files: [] });
@@ -1182,6 +1209,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
 </html>`;
 }
 
+/** Create a random nonce for the webview Content Security Policy. */
 function getNonce(): string {
   let text = '';
   const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';

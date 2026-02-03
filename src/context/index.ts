@@ -1,3 +1,4 @@
+/** Workspace context harvester for deterministic metadata. */
 // Node utilities for reading files and joining paths.
 import * as fs from 'fs';
 import * as path from 'path';
@@ -15,7 +16,7 @@ export type ProjectContext = {
   backendFramework: string | null;
 };
 
-// Collect deterministic project context without using any LLM.
+/** Collect deterministic project context without using any LLM. */
 export function harvestContext(): ProjectContext {
   // Workspace root folder (or null if none).
   const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;

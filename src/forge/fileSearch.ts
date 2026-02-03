@@ -1,6 +1,8 @@
+/** File search helpers for choosing relevant targets. */
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** Extract non-trivial keywords from an instruction for matching. */
 export function extractKeywords(instruction: string): string[] {
   const stopwords = new Set([
     'the',
@@ -31,6 +33,7 @@ export function extractKeywords(instruction: string): string[] {
     .filter((token) => !stopwords.has(token.toLowerCase()));
 }
 
+/** Find files directly mentioned in the instruction. */
 export function extractMentionedFiles(instruction: string, filesList: string[]): string[] {
   const lowered = instruction.toLowerCase();
   const mentioned = filesList.filter((file) => lowered.includes(file.toLowerCase()));
@@ -45,6 +48,7 @@ export function extractMentionedFiles(instruction: string, filesList: string[]):
   return baseNameMatches;
 }
 
+/** Try to match a file by basename prefix from the instruction. */
 export function findFileByBasename(instruction: string, filesList: string[]): string | null {
   const tokens = instruction
     .split(/[^a-zA-Z0-9._-]+/)
@@ -62,6 +66,7 @@ export function findFileByBasename(instruction: string, filesList: string[]): st
   return null;
 }
 
+/** Search file contents for keyword hits to suggest targets. */
 export async function findFilesByKeywords(
   instruction: string,
   rootPath: string,
