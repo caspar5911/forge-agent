@@ -2,6 +2,8 @@
 import * as vscode from 'vscode';
 import type { ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
+import { extractJsonObject } from './json';
+import { getForgeSetting } from './settings';
 import {
   addFiles,
   checkoutBranch,
@@ -45,15 +47,16 @@ type GitAction =
   | { type: 'stash-apply'; ref?: string }
   | { type: 'stash-pop'; ref?: string };
 
+type GitIntentMode = 'disabled' | 'explicit' | 'smart';
+
 /** Run the post-edit Git workflow (status, stage, commit, optional push). */
 export async function maybeRunGitWorkflow(rootPath: string, output: vscode.OutputChannel): Promise<void> {
   output.appendLine(`[git] workflow root: ${rootPath}`);
-  const config = vscode.workspace.getConfiguration('forge');
-  const skipConfirmations = config.get<boolean>('skipConfirmations') === true;
-  const stageMode = config.get<string>('gitStageMode') ?? 'all';
-  const autoMessage = config.get<boolean>('gitAutoMessage') !== false;
-  const messageStyle = config.get<string>('gitMessageStyle') ?? 'conventional';
-  const autoPush = config.get<boolean>('gitAutoPush') === true;
+  const skipConfirmations = getForgeSetting<boolean>('skipConfirmations') === true;
+  const stageMode = getForgeSetting<string>('gitStageMode') ?? 'all';
+  const autoMessage = getForgeSetting<boolean>('gitAutoMessage') !== false;
+  const messageStyle = getForgeSetting<string>('gitMessageStyle') ?? 'conventional';
+  const autoPush = getForgeSetting<boolean>('gitAutoPush') === true;
 
   if (!skipConfirmations) {
     const proceed = await vscode.window.showWarningMessage(
@@ -228,8 +231,7 @@ export async function runGitStage(rootPath: string, output: vscode.OutputChannel
   }
   statusLines.forEach((line) => output.appendLine(`[git] ${line}`));
   const changes = parseGitStatusLines(statusLines);
-  const config = vscode.workspace.getConfiguration('forge');
-  const stageMode = config.get<string>('gitStageMode') ?? 'all';
+  const stageMode = getForgeSetting<string>('gitStageMode') ?? 'all';
   let files = changes.map((change) => change.path);
   if (stageMode === 'select') {
     const picks = await vscode.window.showQuickPick(
@@ -274,10 +276,9 @@ export async function runGitCommit(rootPath: string, output: vscode.OutputChanne
   }
   statusLines.forEach((line) => output.appendLine(`[git] ${line}`));
   const changes = parseGitStatusLines(statusLines);
-  const config = vscode.workspace.getConfiguration('forge');
-  const stageMode = config.get<string>('gitStageMode') ?? 'all';
-  const autoMessage = config.get<boolean>('gitAutoMessage') !== false;
-  const messageStyle = config.get<string>('gitMessageStyle') ?? 'conventional';
+  const stageMode = getForgeSetting<string>('gitStageMode') ?? 'all';
+  const autoMessage = getForgeSetting<boolean>('gitAutoMessage') !== false;
+  const messageStyle = getForgeSetting<string>('gitMessageStyle') ?? 'conventional';
 
   let files = changes.map((change) => change.path);
   if (stageMode === 'select') {
@@ -401,22 +402,26 @@ function parseGitStatusLines(lines: string[]): Array<{ status: string; path: str
 }
 
 /** Detect requested Git operations from a natural-language instruction. */
-export function detectGitActions(instruction: string): GitAction[] {
+function detectExplicitGitActions(instruction: string): GitAction[] {
   const text = instruction.toLowerCase();
+  const mentionsGit = /\bgit\b/.test(text);
   const hasGitContext =
-    /\b(git|repo|repository|branch|origin|remote|commit|push|stage|pull|diff|fetch|checkout|switch|status|log|history|remotes|sync|update|stash|unstage)\b/.test(
+    /\b(git|repo|repository|branch|origin|remote|commit|push|stage|pull|diff|fetch|status|log|history|remotes|sync|update|stash|unstage)\b/.test(
       text
     );
 
   const wantsCommit =
     /\bgit\s+commit\b/.test(text) ||
-    (/\bcommit\b/.test(text) && /\b(changes|code|repo|repository)\b/.test(text)) ||
+    (mentionsGit && /\bcommit\b/.test(text)) ||
+    (/\bcommit\b/.test(text) && /\b(changes|code|repo|repository)\b/.test(text) && hasGitContext) ||
     /\bcheck\s*in\b/.test(text);
   const wantsPush =
     /\bgit\s+push\b/.test(text) ||
+    (mentionsGit && /\bpush\b/.test(text)) ||
     (/\bpush\b/.test(text) && /\b(git|repo|branch|origin|remote)\b/.test(text));
   const wantsStage =
     /\bgit\s+add\b/.test(text) ||
+    (mentionsGit && /\bstage\b/.test(text)) ||
     (/\bstage\b/.test(text) && /\b(changes|git|repo|repository)\b/.test(text));
   const wantsUnstage =
     /\bunstage\b/.test(text) ||
@@ -430,30 +435,37 @@ export function detectGitActions(instruction: string): GitAction[] {
   }
   const wantsStatus =
     /\bgit\s+status\b/.test(text) ||
+    (mentionsGit && /\bstatus\b/.test(text)) ||
     (/\bstatus\b/.test(text) && /\b(git|repo|repository|changes)\b/.test(text));
   const wantsDiff =
     /\bgit\s+diff\b/.test(text) ||
+    (mentionsGit && /\bdiff\b/.test(text)) ||
     (/\bdiff\b/.test(text) && (hasGitContext || /\bchanges\b/.test(text)));
   const wantsLog =
     /\bgit\s+log\b/.test(text) ||
+    (mentionsGit && /\b(log|history|commits)\b/.test(text)) ||
     (/\b(log|history|commits)\b/.test(text) && hasGitContext);
   const wantsBranch =
     /\bgit\s+branch\b/.test(text) ||
+    (mentionsGit && /\bbranches?\b/.test(text)) ||
     (/\bbranches?\b/.test(text) && hasGitContext);
   const wantsRemote =
     /\bgit\s+remote\b/.test(text) ||
+    (mentionsGit && /\bremotes?\b/.test(text)) ||
     (/\bremotes?\b/.test(text) && hasGitContext);
   const wantsFetch =
     /\bgit\s+fetch\b/.test(text) ||
+    (mentionsGit && /\bfetch\b/.test(text)) ||
     (/\bfetch\b/.test(text) && hasGitContext);
   const wantsPull =
     /\bgit\s+pull\b/.test(text) ||
+    (mentionsGit && /\bpull\b/.test(text)) ||
     /\bpull\s+from\b/.test(text) ||
     (/\bpull\b/.test(text) && hasGitContext);
   const wantsCheckout =
     /\bgit\s+checkout\b/.test(text) ||
     /\bgit\s+switch\b/.test(text) ||
-    /\b(checkout|switch)\b/.test(text);
+    (/\b(checkout|switch)\b/.test(text) && hasGitContext);
   const branchMatch = text.match(/\b(?:checkout|switch)\s+(?:to\s+)?([a-z0-9._/-]+)\b/);
   const branch = branchMatch?.[1];
   const pullFromMatch = text.match(/\bpull\s+from\s+([a-z0-9._/-]+)\b/);
@@ -543,6 +555,142 @@ export function detectGitActions(instruction: string): GitAction[] {
     return actions;
   }
   return actions;
+}
+
+function shouldAttemptSmartGitDetection(instruction: string): boolean {
+  return /\b(commit|push|pull|fetch|diff|status|branch|checkout|switch|stash|unstage|stage|git|repo|repository)\b/i.test(
+    instruction
+  );
+}
+
+type GitIntentPayload = {
+  actions?: Array<{
+    type?: string;
+    branch?: string;
+    paths?: string[];
+    staged?: boolean;
+    full?: boolean;
+    includeUntracked?: boolean;
+    message?: string;
+    ref?: string;
+  }>;
+};
+
+function normalizeGitAction(action: {
+  type?: string;
+  branch?: string;
+  paths?: string[];
+  staged?: boolean;
+  full?: boolean;
+  includeUntracked?: boolean;
+  message?: string;
+  ref?: string;
+}): GitAction | null {
+  const type = String(action.type ?? '').toLowerCase();
+  if (type === 'stage') {
+    return { type: 'stage' };
+  }
+  if (type === 'commit') {
+    return { type: 'commit' };
+  }
+  if (type === 'push') {
+    return { type: 'push' };
+  }
+  if (type === 'status') {
+    return { type: 'status' };
+  }
+  if (type === 'diff') {
+    return { type: 'diff', staged: action.staged === true, full: action.full === true };
+  }
+  if (type === 'log') {
+    return { type: 'log' };
+  }
+  if (type === 'branch') {
+    return { type: 'branch' };
+  }
+  if (type === 'remote') {
+    return { type: 'remote' };
+  }
+  if (type === 'fetch') {
+    return { type: 'fetch' };
+  }
+  if (type === 'pull') {
+    return { type: 'pull', branch: action.branch };
+  }
+  if (type === 'checkout' || type === 'switch') {
+    return { type: 'checkout', branch: action.branch };
+  }
+  if (type === 'unstage') {
+    return { type: 'unstage', paths: Array.isArray(action.paths) ? action.paths : [] };
+  }
+  if (type === 'stash-list') {
+    return { type: 'stash-list' };
+  }
+  if (type === 'stash-save') {
+    return {
+      type: 'stash-save',
+      includeUntracked: action.includeUntracked === true,
+      message: typeof action.message === 'string' ? action.message : `Forge stash ${new Date().toLocaleString()}`
+    };
+  }
+  if (type === 'stash-apply') {
+    return { type: 'stash-apply', ref: action.ref };
+  }
+  if (type === 'stash-pop') {
+    return { type: 'stash-pop', ref: action.ref };
+  }
+  return null;
+}
+
+function buildGitIntentMessages(instruction: string): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        'You are detecting whether the user is asking to run Git commands. ' +
+        'Return ONLY valid JSON in the form {"actions":[...]} where each action is one of: ' +
+        'status, diff, commit, push, stage, pull, fetch, checkout, switch, branch, remote, log, ' +
+        'stash-list, stash-save, stash-apply, stash-pop, unstage. ' +
+        'Only include actions if the user explicitly asks for Git help or commands. ' +
+        'If the instruction is about application features (e.g., "checkout flow"), return {"actions": []}.'
+    },
+    {
+      role: 'user',
+      content: instruction
+    }
+  ];
+}
+
+export async function maybeDetectGitActions(
+  instruction: string,
+  output: vscode.OutputChannel
+): Promise<GitAction[]> {
+  const mode = (getForgeSetting<string>('gitIntentMode') ?? 'explicit') as GitIntentMode;
+  if (mode === 'disabled') {
+    return [];
+  }
+
+  const explicit = detectExplicitGitActions(instruction);
+  if (mode === 'explicit') {
+    return explicit;
+  }
+
+  if (!shouldAttemptSmartGitDetection(instruction)) {
+    return explicit;
+  }
+
+  try {
+    const response = await callChatCompletion({}, buildGitIntentMessages(instruction));
+    const payload = extractJsonObject(response) as GitIntentPayload;
+    const actions = Array.isArray(payload.actions) ? payload.actions : [];
+    const mapped = actions
+      .map((action) => normalizeGitAction(action))
+      .filter((action): action is GitAction => action !== null);
+    return mapped.length > 0 ? mapped : explicit;
+  } catch (error) {
+    output.appendLine(`[git] intent detection error: ${String(error)}`);
+    return explicit;
+  }
 }
 
 /** Execute one or more detected Git actions with safety checks. */

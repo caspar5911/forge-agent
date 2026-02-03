@@ -82,6 +82,16 @@
           "default": "",
           "description": "Optional API key for the local LLM server."
         },
+        "forge.profile": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "balanced",
+            "manual"
+          ],
+          "default": "balanced",
+          "description": "Behavior profile that sets smart defaults for confirmations, clarifications, and automation."
+        },
         "forge.skipTargetConfirmation": {
           "type": "boolean",
           "default": false,
@@ -168,6 +178,21 @@
           "default": false,
           "description": "If skipConfirmations is true, allow automatic push."
         },
+        "forge.gitIntentMode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "explicit",
+            "smart"
+          ],
+          "default": "explicit",
+          "description": "How to detect Git actions from prompts: disabled, explicit (requires Git keywords), or smart (LLM intent)."
+        },
+        "forge.gitConfirmActions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Confirm before running detected Git actions."
+        },
         "forge.projectSummaryMaxChars": {
           "type": "number",
           "default": 12000,
@@ -227,6 +252,36 @@
           "minimum": 0,
           "description": "Maximum total characters of chat history to include as context."
         },
+        "forge.qaMinSources": {
+          "type": "number",
+          "default": 1,
+          "minimum": 1,
+          "description": "Minimum number of sources required to answer a question with citations."
+        },
+        "forge.qaMaxFiles": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "description": "Maximum number of files to scan when retrieving sources for Q&A."
+        },
+        "forge.qaMaxSnippets": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Maximum number of source snippets to include in Q&A prompts."
+        },
+        "forge.qaSnippetLines": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Number of context lines above and below a hit when building Q&A snippets."
+        },
+        "forge.qaMaxFileBytes": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 1024,
+          "description": "Maximum file size in bytes to read when retrieving Q&A sources."
+        },
         "forge.intentUseLLM": {
           "type": "boolean",
           "default": true,
@@ -236,6 +291,16 @@
           "type": "boolean",
           "default": true,
           "description": "Ask clarifying questions before editing when the prompt is ambiguous."
+        },
+        "forge.clarifySuggestAnswers": {
+          "type": "boolean",
+          "default": true,
+          "description": "When clarification is needed, propose best-guess answers and a plan before asking the user."
+        },
+        "forge.clarifyConfirmSuggestions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require user confirmation of proposed clarification answers before proceeding."
         },
         "forge.clarifyMaxQuestions": {
           "type": "number",

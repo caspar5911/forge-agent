@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { logActionPurpose } from '../forge/actionPurpose';
 import { buildInlineDiffPreview, getLineChangeSummary } from '../forge/diff';
 import {
-  detectGitActions,
+  maybeDetectGitActions,
   maybeRunGitWorkflow,
   runGitActions
 } from '../forge/gitActions';
@@ -15,10 +15,12 @@ import {
   determineIntent,
   getPendingDisambiguation,
   maybeClarifyInstruction,
+  maybeSuggestClarificationAnswers,
   parseDisambiguationPick
 } from '../forge/intent';
 import { formatDuration, logOutput } from '../forge/logging';
 import { answerQuestion } from '../forge/questions';
+import { getForgeSetting } from '../forge/settings';
 import type { ChatHistoryItem } from '../forge/types';
 import {
   applyFileUpdates,
@@ -42,6 +44,13 @@ export type ForgeRuntimeState = {
     questions: string[];
     rounds: number;
   } | null;
+  pendingClarificationProposal: {
+    instruction: string;
+    questions: string[];
+    proposedAnswers: string[];
+    proposedPlan: string[];
+    rounds: number;
+  } | null;
 };
 
 /** Create a fresh runtime state container for a Forge session. */
@@ -52,7 +61,8 @@ export function createForgeRuntimeState(): ForgeRuntimeState {
     panelInstance: null,
     viewProviderInstance: null,
     runTimer: null,
-    pendingClarification: null
+    pendingClarification: null,
+    pendingClarificationProposal: null
   };
 }
 
@@ -111,10 +121,46 @@ export async function runForge(
 
     setStatus('Checking active editor...');
 
-    const config = vscode.workspace.getConfiguration('forge');
-    const enableMultiFile = config.get<boolean>('enableMultiFile') === true;
+    const enableMultiFile = getForgeSetting<boolean>('enableMultiFile') === true;
     let clarificationRounds = 0;
-    if (state.pendingClarification) {
+    let forceEditAfterClarification = false;
+    let skipClarifyCheck = false;
+    if (state.pendingClarificationProposal) {
+      const proposal = state.pendingClarificationProposal;
+      state.pendingClarificationProposal = null;
+      clarificationRounds = proposal.rounds;
+      const decision = parseClarificationDecision(instruction);
+      if (decision === 'accept') {
+        instruction = formatClarificationProposal(
+          proposal.instruction,
+          proposal.questions,
+          proposal.proposedAnswers,
+          proposal.proposedPlan
+        );
+        forceEditAfterClarification = true;
+        skipClarifyCheck = true;
+        logOutput(output, panelApi, 'Using proposed answers. Continuing...');
+      } else if (decision === 'reject') {
+        state.pendingClarification = {
+          instruction: proposal.instruction,
+          questions: proposal.questions,
+          rounds: proposal.rounds
+        };
+        logOutput(output, panelApi, 'Please answer the clarification questions to continue:');
+        proposal.questions.forEach((question) => logOutput(output, panelApi, `- ${question}`));
+        setStatus('Waiting for clarification');
+        return;
+      } else {
+        instruction = formatClarificationFollowup(
+          proposal.instruction,
+          proposal.questions,
+          instruction
+        );
+        forceEditAfterClarification = true;
+        skipClarifyCheck = true;
+        logOutput(output, panelApi, 'Received clarification answers. Continuing...');
+      }
+    } else if (state.pendingClarification) {
       const pendingClarification = state.pendingClarification;
       state.pendingClarification = null;
       clarificationRounds = pendingClarification.rounds;
@@ -123,6 +169,8 @@ export async function runForge(
         pendingClarification.questions,
         instruction
       );
+      forceEditAfterClarification = true;
+      skipClarifyCheck = true;
       logOutput(output, panelApi, 'Received clarification answers. Continuing...');
     } else {
       const pending = getPendingDisambiguation();
@@ -138,7 +186,7 @@ export async function runForge(
     }
 
     const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-    const gitActions = detectGitActions(instruction);
+    const gitActions = await maybeDetectGitActions(instruction, output);
     if (gitActions.length > 0) {
       if (!rootPath) {
         log('No workspace folder open.');
@@ -146,12 +194,29 @@ export async function runForge(
         setStatus('Idle');
         return;
       }
+      const confirmGitActions = getForgeSetting<boolean>('gitConfirmActions') !== false;
+      if (confirmGitActions) {
+        const label = gitActions.map((action) => action.type).join(', ');
+        const confirm = await vscode.window.showWarningMessage(
+          `Run Git action(s): ${label}?`,
+          'Run',
+          'Cancel'
+        );
+        if (confirm !== 'Run') {
+          void vscode.window.showInformationMessage('Forge: Git actions cancelled.');
+          setStatus('Cancelled');
+          return;
+        }
+      }
       await runGitActions(gitActions, rootPath, output);
       setStatus('Done');
       return;
     }
 
-    const intent = await determineIntent(instruction, output, panelApi, signal, history);
+    let intent = await determineIntent(instruction, output, panelApi, signal, history);
+    if (forceEditAfterClarification) {
+      intent = 'edit';
+    }
 
     const activeEditor = vscode.window.activeTextEditor;
     let activeFilePath: string | null = activeEditor?.document.uri.fsPath ?? null;
@@ -183,8 +248,8 @@ export async function runForge(
       return;
     }
 
-    const clarifyFirst = config.get<boolean>('clarifyBeforeEdit') !== false;
-    if (clarifyFirst) {
+    const clarifyFirst = getForgeSetting<boolean>('clarifyBeforeEdit') !== false;
+    if (clarifyFirst && !skipClarifyCheck) {
       const clarification = await maybeClarifyInstruction(
         instruction,
         rootPath,
@@ -194,31 +259,88 @@ export async function runForge(
         history
       );
       if (clarification && clarification.length > 0) {
-        const maxClarifyRounds = Math.max(1, config.get<number>('clarifyMaxRounds') ?? 3);
-        const gate = config.get<string>('clarifyOnlyIf') ?? 'very-unclear';
+        const maxClarifyRounds = Math.max(1, getForgeSetting<number>('clarifyMaxRounds') ?? 3);
+        const gate = getForgeSetting<string>('clarifyOnlyIf') ?? 'very-unclear';
         const shouldBlock =
           gate === 'always' || (gate === 'very-unclear' && clarification.length >= 2);
         if (shouldBlock) {
           const reachedClarifyLimit = clarificationRounds >= maxClarifyRounds;
           if (!reachedClarifyLimit) {
-            clearPendingDisambiguation();
-            state.pendingClarification = {
-              instruction,
-              questions: clarification,
-              rounds: clarificationRounds + 1
-            };
-            logOutput(output, panelApi, 'Need clarification before editing:');
-            clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
-            logOutput(output, panelApi, 'Reply with your answers to continue.');
-            setStatus('Waiting for clarification');
-            return;
+            const suggestAnswers = getForgeSetting<boolean>('clarifySuggestAnswers') !== false;
+            const confirmSuggestions = getForgeSetting<boolean>('clarifyConfirmSuggestions') !== false;
+            if (suggestAnswers) {
+              const suggestion = await maybeSuggestClarificationAnswers(
+                instruction,
+                clarification,
+                rootPath,
+                output,
+                panelApi,
+                signal,
+                history
+              );
+              if (suggestion && suggestion.answers.length > 0) {
+                clearPendingDisambiguation();
+                if (confirmSuggestions) {
+                  state.pendingClarificationProposal = {
+                    instruction,
+                    questions: clarification,
+                    proposedAnswers: suggestion.answers,
+                    proposedPlan: suggestion.plan,
+                    rounds: clarificationRounds + 1
+                  };
+                  logOutput(output, panelApi, 'Proposed answers:');
+                  suggestion.answers.forEach((answer) => logOutput(output, panelApi, `- ${answer}`));
+                  if (suggestion.plan.length > 0) {
+                    logOutput(output, panelApi, 'Proposed plan:');
+                    suggestion.plan.forEach((step) => logOutput(output, panelApi, `- ${step}`));
+                  }
+                  logOutput(
+                    output,
+                    panelApi,
+                    'Reply "accept" to proceed, or reply with corrections/answers.'
+                  );
+                  setStatus('Waiting for clarification');
+                  return;
+                }
+                instruction = formatClarificationProposal(
+                  instruction,
+                  clarification,
+                  suggestion.answers,
+                  suggestion.plan
+                );
+                logOutput(output, panelApi, 'Using proposed answers. Continuing...');
+              } else {
+                state.pendingClarification = {
+                  instruction,
+                  questions: clarification,
+                  rounds: clarificationRounds + 1
+                };
+                logOutput(output, panelApi, 'Need clarification before editing:');
+                clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
+                logOutput(output, panelApi, 'Reply with your answers to continue.');
+                setStatus('Waiting for clarification');
+                return;
+              }
+            } else {
+              clearPendingDisambiguation();
+              state.pendingClarification = {
+                instruction,
+                questions: clarification,
+                rounds: clarificationRounds + 1
+              };
+              logOutput(output, panelApi, 'Need clarification before editing:');
+              clarification.forEach((question) => logOutput(output, panelApi, `- ${question}`));
+              logOutput(output, panelApi, 'Reply with your answers to continue.');
+              setStatus('Waiting for clarification');
+              return;
+            }
           }
           logOutput(
             output,
             panelApi,
             `Clarification limit reached (${maxClarifyRounds}). Proceeding with best effort.`
           );
-          const autoAssume = config.get<boolean>('clarifyAutoAssume') === true;
+          const autoAssume = getForgeSetting<boolean>('clarifyAutoAssume') === true;
           if (autoAssume || reachedClarifyLimit) {
             const assumptions = buildDefaultAssumptions(clarification, relativePath);
             logOutput(output, panelApi, 'Ambiguous prompt detected. Proceeding with assumptions:');
@@ -241,8 +363,8 @@ export async function runForge(
       return;
     }
 
-    const skipConfirmations = config.get<boolean>('skipConfirmations') === true;
-    const skipTargetConfirmation = config.get<boolean>('skipTargetConfirmation') === true;
+    const skipConfirmations = getForgeSetting<boolean>('skipConfirmations') === true;
+    const skipTargetConfirmation = getForgeSetting<boolean>('skipTargetConfirmation') === true;
 
     if (!enableMultiFile && !(skipConfirmations || skipTargetConfirmation)) {
       const confirmTarget = await vscode.window.showWarningMessage(
@@ -360,7 +482,7 @@ export async function runForge(
         panelApi.appendDiff(inlineDiff);
       }
 
-      const showDiffPreview = config.get<boolean>('showDiffPreview') !== false;
+      const showDiffPreview = getForgeSetting<boolean>('showDiffPreview') !== false;
       if (showDiffPreview) {
         setStatus('Reviewing diff...');
         try {
@@ -403,9 +525,8 @@ export async function runForge(
     }
 
     if (rootPath) {
-      const config = vscode.workspace.getConfiguration('forge');
-      const autoFixValidation = config.get<boolean>('autoFixValidation') === true;
-      const maxFixRetries = Math.max(0, config.get<number>('autoFixMaxRetries') ?? 0);
+      const autoFixValidation = getForgeSetting<boolean>('autoFixValidation') === true;
+      const maxFixRetries = Math.max(0, getForgeSetting<number>('autoFixMaxRetries') ?? 0);
 
       setStatus('Running validation...');
       let validationResult = await maybeRunValidation(rootPath, output);
@@ -445,7 +566,7 @@ export async function runForge(
 
       log('Validation passed.');
 
-      const enableGitWorkflow = config.get<boolean>('enableGitWorkflow') === true;
+      const enableGitWorkflow = getForgeSetting<boolean>('enableGitWorkflow') === true;
       if (enableGitWorkflow) {
         setStatus('Git workflow...');
         await maybeRunGitWorkflow(rootPath, output);
@@ -488,10 +609,48 @@ function formatClarificationFollowup(
   questions: string[],
   answers: string
 ): string {
-  const trimmedAnswers = answers.trim();
+  const cleanedAnswers = answers
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && line.toLowerCase() !== 'copy')
+    .join('\n');
+  const trimmedAnswers = cleanedAnswers.trim();
   const questionBlock = questions.map((item) => `- ${item}`).join('\n');
   return (
     `${originalInstruction}\n\nClarification questions:\n${questionBlock}\n\n` +
     `Clarification answers:\n${trimmedAnswers.length > 0 ? trimmedAnswers : '(no answer provided)'}`
   );
+}
+
+function formatClarificationProposal(
+  originalInstruction: string,
+  questions: string[],
+  proposedAnswers: string[],
+  proposedPlan: string[]
+): string {
+  const questionBlock = questions.map((item) => `- ${item}`).join('\n');
+  const answerBlock = proposedAnswers.length > 0
+    ? proposedAnswers.map((item) => `- ${item}`).join('\n')
+    : '- (no proposed answers)';
+  const planBlock = proposedPlan.length > 0
+    ? proposedPlan.map((item) => `- ${item}`).join('\n')
+    : '- (no plan)';
+  return (
+    `${originalInstruction}\n\nClarification questions:\n${questionBlock}\n\n` +
+    `Proposed answers:\n${answerBlock}\n\nProposed plan:\n${planBlock}`
+  );
+}
+
+function parseClarificationDecision(input: string): 'accept' | 'reject' | 'answer' {
+  const trimmed = input.trim().toLowerCase();
+  if (trimmed.length === 0) {
+    return 'answer';
+  }
+  if (/^(accept|yes|y|ok|okay|proceed|continue|run)$/.test(trimmed)) {
+    return 'accept';
+  }
+  if (/^(reject|no|n|cancel|stop)$/.test(trimmed)) {
+    return 'reject';
+  }
+  return 'answer';
 }

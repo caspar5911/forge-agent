@@ -4,6 +4,7 @@ import { harvestContext } from '../context';
 import { buildValidationOptions, runCommand, type ValidationOption } from '../validation';
 import { logOutput } from './logging';
 import { attemptAutoFix } from './updates';
+import { getForgeSetting } from './settings';
 import type { ChatHistoryItem } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -16,8 +17,7 @@ export type ValidationResult = {
 
 /** Optionally run a validation command based on settings and package scripts. */
 export async function maybeRunValidation(rootPath: string, output: vscode.OutputChannel): Promise<ValidationResult> {
-  const config = vscode.workspace.getConfiguration('forge');
-  const autoValidation = config.get<boolean>('autoValidation') !== false;
+  const autoValidation = getForgeSetting<boolean>('autoValidation') !== false;
   const contextObject = harvestContext();
   const options = buildValidationOptions(contextObject.packageJson, contextObject.packageManager);
 
@@ -115,9 +115,8 @@ export async function runValidationFirstFix(
     return;
   }
 
-  const config = vscode.workspace.getConfiguration('forge');
-  const autoFixValidation = config.get<boolean>('autoFixValidation') === true;
-  const maxFixRetries = Math.max(0, config.get<number>('autoFixMaxRetries') ?? 0);
+  const autoFixValidation = getForgeSetting<boolean>('autoFixValidation') === true;
+  const maxFixRetries = Math.max(0, getForgeSetting<number>('autoFixMaxRetries') ?? 0);
 
   if (!autoFixValidation || maxFixRetries === 0) {
     logOutput(output, panelApi, 'Auto-fix disabled.');

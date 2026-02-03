@@ -12,6 +12,7 @@ import { isAbortError, logOutput, logVerbose } from './logging';
 import { mergeChatHistory } from './intent';
 import { listWorkspaceFiles } from './workspaceFiles';
 import { extractExplicitPaths, extractKeywords, extractMentionedFiles, findFilesByKeywords } from './fileSearch';
+import { getForgeSetting } from './settings';
 import type { ChatHistoryItem, FileSelectionRequester, FileUpdate } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -85,8 +86,7 @@ export async function requestMultiFileUpdate(
   extraContext?: string,
   signal?: AbortSignal
 ): Promise<FileUpdate[] | null> {
-  const config = vscode.workspace.getConfiguration('forge');
-  const skipCreateFilePicker = config.get<boolean>('skipCreateFilePicker') === true;
+  const skipCreateFilePicker = getForgeSetting<boolean>('skipCreateFilePicker') === true;
   const allowNewFiles = shouldAllowNewFiles(instruction);
   const explicitPaths = extractExplicitPaths(instruction);
   const contextObject = harvestContext();
@@ -237,8 +237,7 @@ export async function requestMultiFileUpdate(
       output,
       panelApi,
       history,
-      signal,
-      config
+      signal
     );
   } catch (error) {
     if (isAbortError(error)) {
@@ -576,7 +575,6 @@ async function buildUpdatesFromUserSelection(
   logOutput(output, panelApi, 'Requesting updated files from the local LLM...');
   let updates: Array<{ path: string; content: string }>;
   try {
-    const config = vscode.workspace.getConfiguration('forge');
     updates = await requestUpdatesInChunks(
       instruction,
       filePayloads,
@@ -585,8 +583,7 @@ async function buildUpdatesFromUserSelection(
       output,
       panelApi,
       history,
-      signal,
-      config
+      signal
     );
   } catch (error) {
     if (isAbortError(error)) {
@@ -711,10 +708,9 @@ async function requestUpdatesInChunks(
   output: vscode.OutputChannel,
   panelApi: ForgeUiApi | undefined,
   history: ChatHistoryItem[] | undefined,
-  signal: AbortSignal | undefined,
-  config: vscode.WorkspaceConfiguration
+  signal: AbortSignal | undefined
 ): Promise<Array<{ path: string; content: string }>> {
-  const { maxFiles, maxChars } = getUpdateChunkLimits(config);
+  const { maxFiles, maxChars } = getUpdateChunkLimits();
   const chunks = chunkFilePayloads(filePayloads, maxFiles, maxChars);
   if (chunks.length > 1) {
     logVerbose(output, panelApi, `Chunking update into ${chunks.length} batches.`);
@@ -750,9 +746,9 @@ async function requestUpdatesInChunks(
 }
 
 /** Compute chunking limits for multi-file update requests. */
-function getUpdateChunkLimits(config: vscode.WorkspaceConfiguration): { maxFiles: number; maxChars: number } {
-  const configuredMaxFiles = config.get<number>('maxFilesPerUpdate');
-  const configuredMaxChars = config.get<number>('maxUpdateChars');
+function getUpdateChunkLimits(): { maxFiles: number; maxChars: number } {
+  const configuredMaxFiles = getForgeSetting<number>('maxFilesPerUpdate');
+  const configuredMaxChars = getForgeSetting<number>('maxUpdateChars');
   const maxFiles = Math.max(1, configuredMaxFiles ?? DEFAULT_MAX_FILES_PER_UPDATE);
   const maxChars = Math.max(1000, configuredMaxChars ?? DEFAULT_MAX_UPDATE_CHARS);
   return { maxFiles, maxChars };

@@ -87,23 +87,10 @@ Invoke-RestMethod http://127.0.0.1:8000/v1/models
 Open Settings and search for `Forge`, or edit `settings.json`.
 
 Key settings:
+- `forge.profile` (`auto` | `balanced` | `manual`)
 - `forge.llmEndpoint` (default: `http://127.0.0.1:8000/v1`)
 - `forge.llmModel` (default: `Qwen/Qwen2.5-Coder-32B-Instruct-AWQ`)
 - `forge.enableMultiFile`
-- `forge.autoValidation`
-- `forge.autoFixValidation`
-- `forge.autoFixMaxRetries`
-- `forge.skipTargetConfirmation`
-- `forge.skipConfirmations`
-- `forge.showDiffPreview`
-- `forge.skipCreateFilePicker`
-- `forge.maxFilesPerUpdate`
-- `forge.maxUpdateChars`
-- `forge.clarifyBeforeEdit`
-- `forge.clarifyOnlyIf`
-- `forge.clarifyAutoAssume`
-- `forge.clarifyMaxQuestions`
-- `forge.clarifyMaxRounds`
 
 Environment variables:
 - `FORGE_LLM_ENDPOINT`
@@ -111,44 +98,17 @@ Environment variables:
 - `FORGE_LLM_API_KEY`
 - `FORGE_LLM_TIMEOUT_MS`
 
-Example settings:
+Example settings (minimal):
 ```json
 {
+  "forge.profile": "auto",
   "forge.llmEndpoint": "http://127.0.0.1:8000/v1",
   "forge.llmModel": "Qwen/Qwen2.5-Coder-32B-Instruct-AWQ",
-  "forge.enableMultiFile": true,
-  "forge.autoValidation": true,
-  "forge.autoFixValidation": true,
-  "forge.autoFixMaxRetries": 5,
-  "forge.skipTargetConfirmation": false,
-  "forge.skipConfirmations": false,
-  "forge.showDiffPreview": true,
-  "forge.skipCreateFilePicker": true,
-  "forge.maxFilesPerUpdate": 6,
-  "forge.maxUpdateChars": 60000,
-  "forge.llmTimeoutMs": 120000,
-  "forge.verboseLogs": false,
-  "forge.keepAliveSeconds": 0,
-  "forge.enableGitWorkflow": false,
-  "forge.gitStageMode": "all",
-  "forge.gitAutoMessage": true,
-  "forge.gitMessageStyle": "conventional",
-  "forge.gitAutoPush": false,
-  "forge.projectSummaryMaxChars": 12000,
-  "forge.projectSummaryMaxFiles": 60,
-  "forge.projectSummaryMaxFileBytes": 60000,
-  "forge.projectSummaryChunkChars": 6000,
-  "forge.projectSummaryMaxChunks": 6,
-  "forge.chatHistoryMaxMessages": 8,
-  "forge.chatHistoryMaxChars": 8000,
-  "forge.intentUseLLM": true,
-  "forge.clarifyBeforeEdit": true,
-  "forge.clarifyOnlyIf": "always",
-  "forge.clarifyAutoAssume": false,
-  "forge.clarifyMaxQuestions": 6,
-  "forge.clarifyMaxRounds": 3
+  "forge.enableMultiFile": true
 }
 ```
+
+Advanced settings are still available if you need fine-grained control.
 
 **5) Build & Run (Dev)**
 ```bash

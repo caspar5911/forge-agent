@@ -6,6 +6,7 @@ import { callChatCompletion } from '../llm/client';
 import { extractJsonObject } from './json';
 import { logOutput, logVerbose } from './logging';
 import { listWorkspaceFiles } from './workspaceFiles';
+import { getForgeSetting } from './settings';
 import type { ChatHistoryItem, Intent } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -28,9 +29,8 @@ export function mergeChatHistory(history: ChatHistoryItem[] | undefined, message
   if (!history || history.length === 0) {
     return messages;
   }
-  const config = vscode.workspace.getConfiguration('forge');
-  const maxMessages = Math.max(0, config.get<number>('chatHistoryMaxMessages') ?? 8);
-  const maxChars = Math.max(0, config.get<number>('chatHistoryMaxChars') ?? 8000);
+  const maxMessages = Math.max(0, getForgeSetting<number>('chatHistoryMaxMessages') ?? 8);
+  const maxChars = Math.max(0, getForgeSetting<number>('chatHistoryMaxChars') ?? 8000);
 
   const filtered = history.filter((item) => item && item.content && item.content.trim().length > 0);
   const tail = maxMessages > 0 ? filtered.slice(-maxMessages) : [];
@@ -59,8 +59,7 @@ export async function determineIntent(
   signal: AbortSignal,
   history?: ChatHistoryItem[]
 ): Promise<Intent> {
-  const config = vscode.workspace.getConfiguration('forge');
-  const useLlm = config.get<boolean>('intentUseLLM') === true;
+  const useLlm = getForgeSetting<boolean>('intentUseLLM') === true;
   if (!useLlm) {
     return classifyIntent(instruction);
   }
@@ -71,6 +70,9 @@ export async function determineIntent(
     const payload = extractJsonObject(response);
     const intent = String(payload.intent ?? '').toLowerCase();
     if (intent === 'edit' || intent === 'question' || intent === 'fix') {
+      if (intent === 'fix' && !isValidationFixRequest(instruction)) {
+        return 'edit';
+      }
       return intent;
     }
   } catch (error) {
@@ -130,6 +132,13 @@ export function isCasualChatPrompt(lowered: string): boolean {
   return false;
 }
 
+/** Detect whether a "fix" request is about validation/test/build failures. */
+function isValidationFixRequest(instruction: string): boolean {
+  return /\b(error|errors|failing|failure|test|tests|build|lint|typecheck|compile|ci|pipeline)\b/i.test(
+    instruction
+  );
+}
+
 /** Detect questions that ask to show file contents. */
 export function isFileReadQuestion(lowered: string): boolean {
   if (/\b(show|open|read|view|display)\b/.test(lowered)) {
@@ -177,8 +186,7 @@ export async function maybeClarifyInstruction(
   signal: AbortSignal,
   history?: ChatHistoryItem[]
 ): Promise<string[] | null> {
-  const config = vscode.workspace.getConfiguration('forge');
-  const maxQuestions = Math.max(1, config.get<number>('clarifyMaxQuestions') ?? 6);
+  const maxQuestions = Math.max(1, getForgeSetting<number>('clarifyMaxQuestions') ?? 6);
   const context = harvestContext();
   const filesList = context.files && context.files.length > 0
     ? context.files
@@ -202,6 +210,40 @@ export async function maybeClarifyInstruction(
       .slice(0, maxQuestions);
   } catch (error) {
     logVerbose(output, panelApi, `Clarification check error: ${String(error)}`);
+    return null;
+  }
+}
+
+type ClarificationSuggestion = {
+  answers: string[];
+  plan: string[];
+};
+
+export async function maybeSuggestClarificationAnswers(
+  instruction: string,
+  questions: string[],
+  rootPath: string,
+  output: vscode.OutputChannel,
+  panelApi: ForgeUiApi | undefined,
+  signal: AbortSignal,
+  history?: ChatHistoryItem[]
+): Promise<ClarificationSuggestion | null> {
+  const context = harvestContext();
+  const filesList = context.files && context.files.length > 0
+    ? context.files
+    : listWorkspaceFiles(rootPath, 4, 300);
+  const messages = mergeChatHistory(
+    history,
+    buildClarificationSuggestionMessages(instruction, questions, context, filesList)
+  );
+  try {
+    const response = await callChatCompletion({}, messages, signal);
+    const payload = extractJsonObject(response) as { answers?: unknown; plan?: unknown };
+    const answers = Array.isArray(payload.answers) ? payload.answers.map((item) => String(item)).filter(Boolean) : [];
+    const plan = Array.isArray(payload.plan) ? payload.plan.map((item) => String(item)).filter(Boolean) : [];
+    return { answers, plan };
+  } catch (error) {
+    logVerbose(output, panelApi, `Clarification suggestion error: ${String(error)}`);
     return null;
   }
 }
@@ -232,6 +274,48 @@ function buildClarificationMessages(
       content:
         `Instruction: ${instruction}\n\n` +
         'Project context:\n' +
+        `${JSON.stringify(
+          {
+            workspaceRoot: context.workspaceRoot,
+            activeEditorFile: context.activeEditorFile,
+            packageManager: context.packageManager,
+            frontendFramework: context.frontendFramework,
+            backendFramework: context.backendFramework
+          },
+          null,
+          2
+        )}\n\n` +
+        'Files (partial list):\n' +
+        preview +
+        truncated
+    }
+  ];
+}
+
+function buildClarificationSuggestionMessages(
+  instruction: string,
+  questions: string[],
+  context: ProjectContext,
+  filesList: string[]
+): ChatMessage[] {
+  const preview = filesList.slice(0, 120).join('\n');
+  const truncated = filesList.length > 120 ? '\n...(truncated)' : '';
+  return [
+    {
+      role: 'system',
+      content:
+        'You are proposing best-guess answers to clarification questions for a coding task. ' +
+        'Return ONLY valid JSON in the form {"answers":[...],"plan":[...]}. ' +
+        'Answers must align with the questions in order. ' +
+        'If information is missing, make reasonable defaults and label them as assumptions.'
+    },
+    {
+      role: 'user',
+      content:
+        `Instruction: ${instruction}\n\n` +
+        'Clarification questions:\n' +
+        questions.map((item) => `- ${item}`).join('\n') +
+        '\n\nProject context:\n' +
         `${JSON.stringify(
           {
             workspaceRoot: context.workspaceRoot,
