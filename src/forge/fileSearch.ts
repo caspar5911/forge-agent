@@ -48,6 +48,26 @@ export function extractMentionedFiles(instruction: string, filesList: string[]):
   return baseNameMatches;
 }
 
+/** Extract explicit path-like tokens from the instruction (even if they do not exist yet). */
+export function extractExplicitPaths(instruction: string): string[] {
+  const matches = instruction.matchAll(
+    /(?:^|[\s"'`])([A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)*\.[A-Za-z0-9]{1,8})(?=$|[\s"'`.,;:!?])/g
+  );
+  const found = new Set<string>();
+  for (const match of matches) {
+    const raw = match[1];
+    if (!raw) {
+      continue;
+    }
+    if (raw.includes('://')) {
+      continue;
+    }
+    const normalized = raw.replace(/\\/g, '/');
+    found.add(normalized);
+  }
+  return Array.from(found);
+}
+
 /** Try to match a file by basename prefix from the instruction. */
 export function findFileByBasename(instruction: string, filesList: string[]): string | null {
   const tokens = instruction

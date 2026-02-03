@@ -11,7 +11,7 @@ import { extractJsonPayload } from './json';
 import { isAbortError, logOutput, logVerbose } from './logging';
 import { mergeChatHistory } from './intent';
 import { listWorkspaceFiles } from './workspaceFiles';
-import { extractKeywords, extractMentionedFiles, findFilesByKeywords } from './fileSearch';
+import { extractExplicitPaths, extractKeywords, extractMentionedFiles, findFilesByKeywords } from './fileSearch';
 import type { ChatHistoryItem, FileSelectionRequester, FileUpdate } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -97,9 +97,27 @@ export async function requestMultiFileUpdate(
     getWorkspaceIndex()
   );
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
+  const allowNewFiles = shouldAllowNewFiles(instruction);
   const userSelection = await requestUserFileSelection(filesList, preselected, panel, viewProvider);
   if (userSelection) {
-    if (userSelection.length === 0) {
+    if (userSelection.cancelled) {
+      logOutput(output, panelApi, 'File selection cancelled.');
+      return null;
+    }
+    if (userSelection.files.length > 0) {
+      lastManualSelection = userSelection.files;
+      return buildUpdatesFromUserSelection(
+        userSelection.files,
+        rootPath,
+        instruction,
+        activeRelativePath,
+        output,
+        panelApi,
+        extraContext,
+        signal
+      );
+    }
+    if (!allowNewFiles) {
       logOutput(
         output,
         panelApi,
@@ -107,18 +125,6 @@ export async function requestMultiFileUpdate(
       );
       return null;
     }
-
-    lastManualSelection = userSelection;
-    return buildUpdatesFromUserSelection(
-      userSelection,
-      rootPath,
-      instruction,
-      activeRelativePath,
-      output,
-      panelApi,
-      extraContext,
-      signal
-    );
   }
 
   logVerbose(output, panelApi, 'Requesting file selection from the local LLM...');
@@ -130,7 +136,8 @@ export async function requestMultiFileUpdate(
       filesList,
       activeRelativePath,
       extraContext,
-      getWorkspaceIndex()
+      getWorkspaceIndex(),
+      allowNewFiles
     )
   );
 
@@ -151,8 +158,9 @@ export async function requestMultiFileUpdate(
   }
 
   const mentionedFiles = extractMentionedFiles(instruction, filesList);
+  const explicitPaths = extractExplicitPaths(instruction);
   const uniquePaths = Array.from(
-    new Set([...selectedFiles.map((item) => String(item)), ...mentionedFiles])
+    new Set([...selectedFiles.map((item) => String(item)), ...mentionedFiles, ...explicitPaths])
   );
 
   if (uniquePaths.length === 0) {
@@ -380,6 +388,11 @@ function shouldAllowComments(instruction: string): boolean {
   return /\b(comment|comments|document|documentation|explain|explanation)\b/i.test(instruction);
 }
 
+/** Decide whether to allow creating new files based on the instruction. */
+function shouldAllowNewFiles(instruction: string): boolean {
+  return /\b(create|add|new|generate|scaffold|bootstrap|website|web\s*page|html|css)\b/i.test(instruction);
+}
+
 /** Resolve and validate a workspace-relative file path. */
 function resolveWorkspacePath(
   rootPath: string,
@@ -410,7 +423,8 @@ function buildFileSelectionMessages(
     generatedAt: string;
     symbols: Array<{ name: string; kind: string; containerName: string | null; relativePath: string }>;
     files: string[];
-  } | null
+  } | null,
+  allowNewFiles?: boolean
 ): ChatMessage[] {
   const listPreview = filesList.slice(0, 500).join('\n');
   const truncated = filesList.length > 500 ? '\n...(truncated)' : '';
@@ -428,6 +442,9 @@ function buildFileSelectionMessages(
   const symbolBlock = symbolPreview
     ? `Workspace symbols (index @ ${index?.generatedAt ?? 'unknown'}):\n${symbolPreview}${symbolTruncated}\n`
     : '';
+  const newFileNote = allowNewFiles
+    ? 'If the instruction requires creating new files, you may include new relative paths not in the list.'
+    : '';
 
   return [
     {
@@ -435,7 +452,8 @@ function buildFileSelectionMessages(
       content:
         'You are a coding assistant. Select the files that must be edited. ' +
         'Return ONLY valid JSON in the format {"files":["path1","path2"]}. ' +
-        'Paths must be relative to the project root.'
+        'Paths must be relative to the project root. ' +
+        newFileNote
     },
     {
       role: 'user',
@@ -493,7 +511,7 @@ async function requestUserFileSelection(
   preselected: string[],
   panel?: FileSelectionRequester | null,
   viewProvider?: FileSelectionRequester | null
-): Promise<string[] | null> {
+): Promise<{ files: string[]; cancelled: boolean } | null> {
   if (panel) {
     return panel.requestFileSelection(filesList, preselected);
   }

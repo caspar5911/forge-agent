@@ -11,7 +11,7 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
   private onRun?: (instruction: string, history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) => void;
   private onReady?: () => void;
   private onStop?: () => void;
-  private pendingSelection?: (files: string[]) => void;
+  private pendingSelection?: (result: { files: string[]; cancelled: boolean } | null) => void;
   private readonly extensionUri: vscode.Uri;
 
   /** Create the view provider with the extension URI for resource loading. */
@@ -34,8 +34,10 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
       if (message?.type === 'stop') {
         this.onStop?.();
       }
-      if (message?.type === 'fileSelectionResult' && Array.isArray(message.files)) {
-        this.pendingSelection?.(message.files);
+      if (message?.type === 'fileSelectionResult') {
+        const files = Array.isArray(message.files) ? message.files : [];
+        const cancelled = message.cancelled === true;
+        this.pendingSelection?.({ files, cancelled });
         this.pendingSelection = undefined;
       }
       if (message?.type === 'clear') {
@@ -58,11 +60,11 @@ export class ForgeViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Ask the sidebar UI to present a file selection modal. */
-  requestFileSelection(files: string[], preselected: string[] = []): Promise<string[]> {
+  requestFileSelection(files: string[], preselected: string[] = []): Promise<{ files: string[]; cancelled: boolean } | null> {
     return new Promise((resolve) => {
       this.pendingSelection = resolve;
       if (!this.view) {
-        resolve([]);
+        resolve(null);
         return;
       }
       this.view.webview.postMessage({ type: 'fileSelection', files, preselected });

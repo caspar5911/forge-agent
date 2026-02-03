@@ -9,7 +9,7 @@ export class ForgePanel {
   private readonly panel: vscode.WebviewPanel;
   private onRun?: (instruction: string, history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>) => void;
   private onStop?: () => void;
-  private pendingSelection?: (files: string[]) => void;
+  private pendingSelection?: (result: { files: string[]; cancelled: boolean } | null) => void;
 
   /** Create a panel or reveal the existing one. */
   static createOrShow(): ForgePanel {
@@ -46,8 +46,10 @@ export class ForgePanel {
       if (message?.type === 'stop') {
         this.onStop?.();
       }
-      if (message?.type === 'fileSelectionResult' && Array.isArray(message.files)) {
-        this.pendingSelection?.(message.files);
+      if (message?.type === 'fileSelectionResult') {
+        const files = Array.isArray(message.files) ? message.files : [];
+        const cancelled = message.cancelled === true;
+        this.pendingSelection?.({ files, cancelled });
         this.pendingSelection = undefined;
       }
       if (message?.type === 'clear') {
@@ -82,7 +84,7 @@ export class ForgePanel {
   }
 
   /** Ask the panel UI to present a file selection modal. */
-  requestFileSelection(files: string[], preselected: string[] = []): Promise<string[]> {
+  requestFileSelection(files: string[], preselected: string[] = []): Promise<{ files: string[]; cancelled: boolean } | null> {
     return new Promise((resolve) => {
       this.pendingSelection = resolve;
       this.panel.webview.postMessage({ type: 'fileSelection', files, preselected });

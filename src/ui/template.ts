@@ -504,6 +504,12 @@ export function getForgeHtml(webview: vscode.Webview): string {
         margin-bottom: 12px;
       }
 
+      .modal-help {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
       .file-list {
         overflow: auto;
         border: 1px solid var(--border);
@@ -610,6 +616,8 @@ export function getForgeHtml(webview: vscode.Webview): string {
         <div class="modal-header">
           <div class="modal-title">Select files to edit</div>
         </div>
+        <div class="modal-help">Add new file paths if you want Forge to create them.</div>
+        <input id="new-file-input" class="modal-search" placeholder="New file paths (comma separated)..." />
         <input id="file-search" class="modal-search" placeholder="Search files..." />
         <div id="file-list" class="file-list"></div>
         <div class="modal-actions">
@@ -636,6 +644,7 @@ export function getForgeHtml(webview: vscode.Webview): string {
       const fileModal = document.getElementById('file-modal');
       const fileList = document.getElementById('file-list');
       const fileSearch = document.getElementById('file-search');
+      const newFileInput = document.getElementById('new-file-input');
       const fileApply = document.getElementById('file-apply');
       const fileCancel = document.getElementById('file-cancel');
       const fileCount = document.getElementById('file-count');
@@ -1141,6 +1150,9 @@ export function getForgeHtml(webview: vscode.Webview): string {
           preselectedFiles = Array.isArray(message.preselected) ? message.preselected : [];
           renderFileList(currentFiles);
           fileSearch.value = '';
+          if (newFileInput) {
+            newFileInput.value = '';
+          }
           fileModal.classList.add('show');
           setStep('select');
         }
@@ -1174,10 +1186,21 @@ export function getForgeHtml(webview: vscode.Webview): string {
         updateCount();
       };
 
+      const parseNewFiles = () => {
+        if (!newFileInput) return [];
+        const raw = newFileInput.value.trim();
+        if (!raw) return [];
+        return raw
+          .split(/[,\n]/)
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0);
+      };
+
       // Update selected file count in the modal.
       const updateCount = () => {
         const selected = fileList.querySelectorAll('input[type="checkbox"]:checked').length;
-        fileCount.textContent = selected + ' selected';
+        const newFiles = parseNewFiles();
+        fileCount.textContent = selected + newFiles.length + ' selected';
       };
 
       // Filter the file list as the user types.
@@ -1187,19 +1210,25 @@ export function getForgeHtml(webview: vscode.Webview): string {
         renderFileList(filtered);
       });
 
+      if (newFileInput) {
+        newFileInput.addEventListener('input', updateCount);
+      }
+
       // Apply selected files and close the modal.
       fileApply.addEventListener('click', () => {
         const selected = Array.from(fileList.querySelectorAll('input[type="checkbox"]:checked'))
           .map((input) => input.value);
+        const newFiles = parseNewFiles();
+        const combined = Array.from(new Set([...selected, ...newFiles]));
         fileModal.classList.remove('show');
-        vscode.postMessage({ type: 'fileSelectionResult', files: selected });
+        vscode.postMessage({ type: 'fileSelectionResult', files: combined, cancelled: false });
         setStep('update');
       });
 
       // Cancel file selection and close the modal.
       fileCancel.addEventListener('click', () => {
         fileModal.classList.remove('show');
-        vscode.postMessage({ type: 'fileSelectionResult', files: [] });
+        vscode.postMessage({ type: 'fileSelectionResult', files: [], cancelled: true });
         setStep('ready');
       });
 

@@ -14,7 +14,13 @@ export type FileUpdate = {
   updated: string;
 };
 
+/** Result payload from a file selection prompt. */
+export type FileSelectionResult = {
+  files: string[];
+  cancelled: boolean;
+};
+
 /** Contract for UI components that can request file selections. */
 export type FileSelectionRequester = {
-  requestFileSelection: (files: string[], preselected: string[]) => Promise<string[]>;
+  requestFileSelection: (files: string[], preselected: string[]) => Promise<FileSelectionResult | null>;
 };
