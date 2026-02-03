@@ -5,6 +5,7 @@ import { buildValidationOptions, runCommand, type ValidationOption } from '../va
 import { logOutput } from './logging';
 import { attemptAutoFix } from './updates';
 import { getForgeSetting } from './settings';
+import { recordPayload, recordStep } from './trace';
 import type { ChatHistoryItem } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -52,8 +53,11 @@ export async function maybeRunValidation(rootPath: string, output: vscode.Output
   }
 
   output.appendLine(`Running validation: ${selected.label}`);
+  recordStep('Validation command', `${selected.label}: ${selected.command}`);
   try {
     const result = await runCommand(selected.command, rootPath, output);
+    recordStep('Validation exit code', `${selected.label}: ${result.code}`);
+    recordPayload(`Validation output: ${selected.label}`, result.output || '(no output)');
     return {
       ok: result.code === 0,
       output: result.output,
@@ -62,6 +66,7 @@ export async function maybeRunValidation(rootPath: string, output: vscode.Output
     };
   } catch (error) {
     output.appendLine(`Validation error: ${String(error)}`);
+    recordStep('Validation error', `${selected.label}: ${String(error)}`);
     return { ok: false, output: String(error), command: selected.command, label: selected.label };
   }
 }
@@ -78,14 +83,18 @@ async function runAllValidationOptions(
 
   for (const option of ordered) {
     output.appendLine(`Running validation: ${option.label}`);
+    recordStep('Validation command', `${option.label}: ${option.command}`);
     try {
       const result = await runCommand(option.command, rootPath, output);
+      recordStep('Validation exit code', `${option.label}: ${result.code}`);
+      recordPayload(`Validation output: ${option.label}`, result.output || '(no output)');
       combinedOutput += result.output;
       if (result.code !== 0) {
         ok = false;
       }
     } catch (error) {
       output.appendLine(`Validation error: ${String(error)}`);
+      recordStep('Validation error', `${option.label}: ${String(error)}`);
       combinedOutput += String(error);
       ok = false;
     }
@@ -109,6 +118,7 @@ export async function runValidationFirstFix(
   history?: ChatHistoryItem[]
 ): Promise<void> {
   logOutput(output, panelApi, 'Running validation (fix mode)...');
+  recordStep('Validation mode', 'fix');
   let validationResult = await maybeRunValidation(rootPath, output);
   if (validationResult.ok) {
     logOutput(output, panelApi, 'Validation already passing.');
@@ -125,6 +135,7 @@ export async function runValidationFirstFix(
 
   for (let attempt = 1; attempt <= maxFixRetries; attempt += 1) {
     logOutput(output, panelApi, `Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
+    recordStep('Auto-fix attempt', `${attempt} of ${maxFixRetries}`);
     const fixed = await attemptAutoFix(
       rootPath,
       instruction,

@@ -21,6 +21,7 @@ import {
 import { formatDuration, logOutput } from '../forge/logging';
 import { answerQuestion } from '../forge/questions';
 import { getForgeSetting } from '../forge/settings';
+import { endTrace, recordPayload, recordStep, startTrace } from '../forge/trace';
 import type { ChatHistoryItem } from '../forge/types';
 import {
   applyFileUpdates,
@@ -96,6 +97,7 @@ export async function runForge(
   state.activeAbortController?.abort();
   state.activeAbortController = new AbortController();
   const signal = state.activeAbortController.signal;
+  startTrace();
   const startedAt = Date.now();
   if (state.runTimer) {
     clearInterval(state.runTimer);
@@ -188,6 +190,7 @@ export async function runForge(
     const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
     const gitActions = await maybeDetectGitActions(instruction, output);
     if (gitActions.length > 0) {
+      recordStep('Git intent', gitActions.map((action) => action.type).join(', '));
       if (!rootPath) {
         log('No workspace folder open.');
         void vscode.window.showErrorMessage('Forge: Open a workspace folder first.');
@@ -217,6 +220,7 @@ export async function runForge(
     if (forceEditAfterClarification) {
       intent = 'edit';
     }
+    recordStep('Intent', intent);
 
     const activeEditor = vscode.window.activeTextEditor;
     let activeFilePath: string | null = activeEditor?.document.uri.fsPath ?? null;
@@ -243,6 +247,7 @@ export async function runForge(
     }
 
     if (intent === 'fix') {
+      recordStep('Validation strategy', 'validate-first');
       await runValidationFirstFix(rootPath, instruction, output, panelApi, signal, history);
       setStatus('Done');
       return;
@@ -259,6 +264,7 @@ export async function runForge(
         history
       );
       if (clarification && clarification.length > 0) {
+        recordStep('Clarification questions', clarification.map((item) => `- ${item}`).join('\n'));
         const maxClarifyRounds = Math.max(1, getForgeSetting<number>('clarifyMaxRounds') ?? 3);
         const gate = getForgeSetting<string>('clarifyOnlyIf') ?? 'very-unclear';
         const shouldBlock =
@@ -279,6 +285,13 @@ export async function runForge(
                 history
               );
               if (suggestion && suggestion.answers.length > 0) {
+                recordStep(
+                  'Proposed answers',
+                  suggestion.answers.map((item) => `- ${item}`).join('\n')
+                );
+                if (suggestion.plan.length > 0) {
+                  recordStep('Proposed plan', suggestion.plan.map((item) => `- ${item}`).join('\n'));
+                }
                 clearPendingDisambiguation();
                 if (confirmSuggestions) {
                   state.pendingClarificationProposal = {
@@ -418,6 +431,9 @@ export async function runForge(
         if (inlineDiff && panelApi) {
           panelApi.appendDiff(inlineDiff);
         }
+        if (inlineDiff) {
+          recordPayload(`Inline diff: ${file.relativePath}`, inlineDiff.join('\n'));
+        }
       }
       summaries.forEach((line) => log(line));
 
@@ -480,6 +496,9 @@ export async function runForge(
       );
       if (inlineDiff && panelApi) {
         panelApi.appendDiff(inlineDiff);
+      }
+      if (inlineDiff) {
+        recordPayload(`Inline diff: ${updatedFile.relativePath}`, inlineDiff.join('\n'));
       }
 
       const showDiffPreview = getForgeSetting<boolean>('showDiffPreview') !== false;
@@ -580,6 +599,14 @@ export async function runForge(
     }
     if (panelApi) {
       panelApi.setStatus('Done');
+    }
+    if (panelApi?.appendPeek) {
+      const entries = endTrace();
+      if (entries.length > 0) {
+        panelApi.appendPeek(entries);
+      }
+    } else {
+      endTrace();
     }
     if (!signal.aborted) {
       const doneMessage = `Done in ${formatDuration(elapsedMs)}.`;

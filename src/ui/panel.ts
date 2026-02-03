@@ -77,6 +77,7 @@ export class ForgePanel {
       appendLog: (text) => this.panel.webview.postMessage({ type: 'log', text }),
       setActiveFile: (text) => this.panel.webview.postMessage({ type: 'activeFile', text }),
       appendDiff: (lines) => this.panel.webview.postMessage({ type: 'diff', lines }),
+      appendPeek: (entries) => this.panel.webview.postMessage({ type: 'peek', entries }),
       startStream: (role) => this.panel.webview.postMessage({ type: 'streamStart', role }),
       appendStream: (text) => this.panel.webview.postMessage({ type: 'stream', text }),
       endStream: () => this.panel.webview.postMessage({ type: 'streamEnd' })

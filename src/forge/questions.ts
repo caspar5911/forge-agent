@@ -6,6 +6,7 @@ import { harvestContext, type ProjectContext } from '../context';
 import type { ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
 import { isAbortError, logOutput } from './logging';
+import { recordPrompt, recordResponse, recordStep } from './trace';
 import { listWorkspaceFiles } from './workspaceFiles';
 import { extractKeywords, extractMentionedFiles, findFileByBasename } from './fileSearch';
 import { mergeChatHistory } from './intent';
@@ -54,9 +55,11 @@ export async function answerQuestion(
           history,
           buildProjectChunkMessages(chunk, i + 1, chunksResult.chunks.length)
         );
+        recordPrompt(`Project summary chunk ${i + 1}/${chunksResult.chunks.length} prompt`, messages, true);
         const response = await callChatCompletion({}, messages, signal);
         const content = response.choices?.[0]?.message?.content?.trim();
         if (content) {
+          recordResponse(`Project summary chunk ${i + 1}/${chunksResult.chunks.length} response`, content);
           partials.push(content);
         }
       }
@@ -69,12 +72,14 @@ export async function answerQuestion(
         history,
         buildProjectSummaryFromChunksMessages(instruction, partials)
       );
+      recordPrompt('Project summary prompt', finalMessages, true);
       const response = await callChatCompletion({}, finalMessages, signal);
       const answer = response.choices?.[0]?.message?.content?.trim();
       if (!answer) {
         logOutput(output, panelApi, 'No answer returned.');
         return;
       }
+      recordResponse('Project summary response', answer);
       if (chunksResult.truncated) {
         logOutput(output, panelApi, 'Note: summary context was truncated to fit model limits.');
       }
@@ -133,6 +138,12 @@ export async function answerQuestion(
   }
 
   const retrieval = collectRelevantSnippets(instruction, rootPath, filesList, config);
+  if (retrieval.sources.length > 0) {
+    const sourceList = retrieval.sources
+      .map((source) => `${source.id} ${source.path}:${source.startLine}-${source.endLine}`)
+      .join('\n');
+    recordStep('Q&A sources', sourceList);
+  }
   const minSources = Math.max(1, config.get<number>('qaMinSources') ?? 1);
   if (retrieval.sources.length < minSources) {
     logOutput(
@@ -147,6 +158,7 @@ export async function answerQuestion(
     history,
     buildGroundedQuestionMessages(instruction, context, retrieval.sources)
   );
+  recordPrompt('Q&A prompt', messages, true);
   logOutput(output, panelApi, 'Requesting answer from the local LLM...');
   try {
     const response = await callChatCompletion({}, messages, signal);
@@ -155,6 +167,7 @@ export async function answerQuestion(
       logOutput(output, panelApi, 'No answer returned.');
       return;
     }
+    recordResponse('Q&A response', answer);
     const needsContext = extractNeedsContext(answer);
     if (needsContext) {
       logOutput(output, panelApi, buildNeedsContextMessage(instruction, retrieval, filesList.length, needsContext));

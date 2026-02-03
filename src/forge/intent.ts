@@ -7,6 +7,7 @@ import { extractJsonObject } from './json';
 import { logOutput, logVerbose } from './logging';
 import { listWorkspaceFiles } from './workspaceFiles';
 import { getForgeSetting } from './settings';
+import { recordPrompt, recordResponse } from './trace';
 import type { ChatHistoryItem, Intent } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -65,8 +66,13 @@ export async function determineIntent(
   }
 
   const messages = buildIntentMessages(instruction);
+  recordPrompt('Intent prompt', messages, true);
   try {
     const response = await callChatCompletion({}, messages, signal);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Intent response', raw);
+    }
     const payload = extractJsonObject(response);
     const intent = String(payload.intent ?? '').toLowerCase();
     if (intent === 'edit' || intent === 'question' || intent === 'fix') {
@@ -195,8 +201,13 @@ export async function maybeClarifyInstruction(
     history,
     buildClarificationMessages(instruction, context, filesList, maxQuestions)
   );
+  recordPrompt('Clarification prompt', messages, true);
   try {
     const response = await callChatCompletion({}, messages, signal);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Clarification response', raw);
+    }
     const payload = extractJsonObject(response);
     const kind = String(payload.kind ?? '').toLowerCase();
     if (kind !== 'clarification') {
@@ -236,8 +247,13 @@ export async function maybeSuggestClarificationAnswers(
     history,
     buildClarificationSuggestionMessages(instruction, questions, context, filesList)
   );
+  recordPrompt('Clarification suggestions prompt', messages, true);
   try {
     const response = await callChatCompletion({}, messages, signal);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Clarification suggestions response', raw);
+    }
     const payload = extractJsonObject(response) as { answers?: unknown; plan?: unknown };
     const answers = Array.isArray(payload.answers) ? payload.answers.map((item) => String(item)).filter(Boolean) : [];
     const plan = Array.isArray(payload.plan) ? payload.plan.map((item) => String(item)).filter(Boolean) : [];
@@ -347,8 +363,13 @@ export async function maybePickDisambiguation(
     ? context.files
     : listWorkspaceFiles(rootPath, 3, 200);
   const messages = buildDisambiguationOptionsMessages(instruction, context, filesList);
+  recordPrompt('Disambiguation prompt', messages, true);
   try {
     const response = await callChatCompletion({}, messages, signal);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Disambiguation response', raw);
+    }
     const payload = extractJsonObject(response);
     const options = Array.isArray(payload.options) ? payload.options : [];
     const mapped = options

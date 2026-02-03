@@ -63,12 +63,72 @@ export function extractExplicitPaths(instruction: string): string[] {
       continue;
     }
     const normalized = raw.replace(/\\/g, '/');
+    if (!hasAllowedExtension(normalized)) {
+      continue;
+    }
+    if (hasDisallowedSegment(normalized)) {
+      continue;
+    }
     if (isLikelyLibraryToken(normalized)) {
       continue;
     }
     found.add(normalized);
   }
   return Array.from(found);
+}
+
+function hasAllowedExtension(value: string): boolean {
+  const ext = path.extname(value).toLowerCase().replace('.', '');
+  if (!ext) {
+    return false;
+  }
+  const allowed = new Set([
+    'ts',
+    'tsx',
+    'js',
+    'jsx',
+    'mjs',
+    'cjs',
+    'json',
+    'md',
+    'mdx',
+    'css',
+    'scss',
+    'sass',
+    'less',
+    'html',
+    'htm',
+    'yml',
+    'yaml',
+    'toml',
+    'txt',
+    'svg',
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'ico'
+  ]);
+  return allowed.has(ext);
+}
+
+function hasDisallowedSegment(value: string): boolean {
+  const parts = value.split('/').map((part) => part.toLowerCase());
+  const blocked = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    'out',
+    'build',
+    'coverage',
+    '.next',
+    '.nuxt',
+    '.svelte-kit',
+    '.vite',
+    '.cache'
+  ]);
+  return parts.some((part) => blocked.has(part));
 }
 
 function isLikelyLibraryToken(value: string): boolean {

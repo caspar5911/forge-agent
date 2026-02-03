@@ -3,6 +3,7 @@ import type { OutputChannel } from 'vscode';
 import type { ChatMessage } from '../llm/client';
 import { callChatCompletion, callChatCompletionStream } from '../llm/client';
 import { isAbortError, logOutput } from './logging';
+import { recordPrompt, recordResponse } from './trace';
 import type { ForgeUiApi } from '../ui/api';
 
 /** Ask the LLM to summarize actions as "Action - Purpose" bullets and log them. */
@@ -14,6 +15,7 @@ export async function logActionPurpose(
   signal?: AbortSignal
 ): Promise<void> {
   const messages = buildActionPurposeMessages(instruction, files);
+  recordPrompt('Action purpose prompt', messages, true);
   logOutput(output, panelApi, 'Summarizing actions...');
   try {
     if (panelApi?.appendStream) {
@@ -28,6 +30,7 @@ export async function logActionPurpose(
       if (!content) {
         return;
       }
+      recordResponse('Action purpose response', content);
       content
         .split('\n')
         .map((line) => line.trim())
@@ -41,6 +44,7 @@ export async function logActionPurpose(
     if (!content) {
       return;
     }
+    recordResponse('Action purpose response', content);
     content
       .split('\n')
       .map((line) => line.trim())

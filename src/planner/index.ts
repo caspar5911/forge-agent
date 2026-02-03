@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { LLMConfig } from '../llm/config';
 import type { ChatCompletionResponse, ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
+import { recordPrompt, recordResponse, recordStep } from '../forge/trace';
 // Task plan type from the compressor phase.
 import type { TaskPlan } from '../compressor/index';
 
@@ -44,11 +45,17 @@ export async function nextToolCall(
   config: LLMConfig = {}
 ): Promise<ToolCall> {
   const messages = buildMessages(input);
+  recordPrompt('Planner prompt', messages, true);
 
   try {
     const response = await callChatCompletion(config, messages);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Planner response', raw);
+    }
     return parseToolCall(response);
   } catch {
+    recordStep('Planner fallback', 'Using local planner fallback.');
     // Fall back to deterministic planning if the LLM fails.
     return nextToolCallLocal(input);
   }

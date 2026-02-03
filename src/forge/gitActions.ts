@@ -4,6 +4,7 @@ import type { ChatMessage } from '../llm/client';
 import { callChatCompletion } from '../llm/client';
 import { extractJsonObject } from './json';
 import { getForgeSetting } from './settings';
+import { recordPrompt, recordResponse, recordStep } from './trace';
 import {
   addFiles,
   checkoutBranch,
@@ -680,12 +681,21 @@ export async function maybeDetectGitActions(
   }
 
   try {
-    const response = await callChatCompletion({}, buildGitIntentMessages(instruction));
+    const messages = buildGitIntentMessages(instruction);
+    recordPrompt('Git intent prompt', messages, true);
+    const response = await callChatCompletion({}, messages);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Git intent response', raw);
+    }
     const payload = extractJsonObject(response) as GitIntentPayload;
     const actions = Array.isArray(payload.actions) ? payload.actions : [];
     const mapped = actions
       .map((action) => normalizeGitAction(action))
       .filter((action): action is GitAction => action !== null);
+    if (mapped.length > 0) {
+      recordStep('Git intent actions', mapped.map((item) => item.type).join(', '));
+    }
     return mapped.length > 0 ? mapped : explicit;
   } catch (error) {
     output.appendLine(`[git] intent detection error: ${String(error)}`);
@@ -919,8 +929,13 @@ async function generateCommitMessage(
   style: string
 ): Promise<string> {
   const messages = buildCommitMessageMessages(diffStat, files, style);
+  recordPrompt('Commit message prompt', messages, true);
   try {
     const response = await callChatCompletion({}, messages);
+    const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+    if (raw) {
+      recordResponse('Commit message response', raw);
+    }
     const content = response.choices?.[0]?.message?.content?.trim() ?? '';
     if (!content) {
       return '';

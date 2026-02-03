@@ -368,6 +368,59 @@ export function getForgeHtml(webview: vscode.Webview): string {
         font-size: 12px;
       }
 
+      .message.peek {
+        align-self: stretch;
+        background: rgba(10, 15, 20, 0.65);
+        border-color: rgba(148, 163, 184, 0.25);
+        color: #d5dde7;
+        font-size: 12px;
+      }
+
+      .peek-details {
+        width: 100%;
+      }
+
+      .peek-details summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: #c8d4e3;
+      }
+
+      .peek-section {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px dashed rgba(148, 163, 184, 0.25);
+      }
+
+      .peek-title {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+      }
+
+      .peek-content {
+        background: rgba(10, 15, 20, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 8px;
+        padding: 8px 10px;
+        white-space: pre-wrap;
+        font-family: "Consolas", "Courier New", monospace;
+        font-size: 12px;
+      }
+
+      .peek-toggle {
+        margin-top: 6px;
+        background: transparent;
+        color: #c8d4e3;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 6px;
+        font-size: 11px;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+
       .message.error {
         align-self: center;
         background: rgba(248, 81, 73, 0.15);
@@ -1018,6 +1071,56 @@ export function getForgeHtml(webview: vscode.Webview): string {
         updateEmptyState();
       };
 
+      // Append a collapsible peek block.
+      const addPeek = (entries) => {
+        if (!entries || !entries.length) return;
+        const container = document.createElement('div');
+        container.className = 'message peek';
+        const details = document.createElement('details');
+        details.className = 'peek-details';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Peek';
+        details.appendChild(summary);
+
+        entries.forEach((entry) => {
+          const section = document.createElement('div');
+          section.className = 'peek-section';
+          const title = document.createElement('div');
+          title.className = 'peek-title';
+          title.textContent = entry.title || entry.kind || 'Step';
+          const content = document.createElement('pre');
+          content.className = 'peek-content';
+          const isSensitive = entry.sensitive === true;
+          content.textContent = isSensitive ? '[hidden]' : (entry.content || '');
+          section.appendChild(title);
+          section.appendChild(content);
+
+          if (isSensitive) {
+            const toggle = document.createElement('button');
+            toggle.className = 'peek-toggle';
+            toggle.type = 'button';
+            toggle.textContent = 'Show';
+            toggle.addEventListener('click', () => {
+              if (toggle.textContent === 'Show') {
+                content.textContent = entry.content || '';
+                toggle.textContent = 'Hide';
+              } else {
+                content.textContent = '[hidden]';
+                toggle.textContent = 'Show';
+              }
+            });
+            section.appendChild(toggle);
+          }
+
+          details.appendChild(section);
+        });
+
+        container.appendChild(details);
+        chat.appendChild(container);
+        chat.scrollTop = chat.scrollHeight;
+        updateEmptyState();
+      };
+
       // Handle run/stop button click.
       run.addEventListener('click', () => {
         const text = prompt.value.trim();
@@ -1111,6 +1214,9 @@ export function getForgeHtml(webview: vscode.Webview): string {
         }
         if (message.type === 'diff') {
           addDiff(message.lines || []);
+        }
+        if (message.type === 'peek') {
+          addPeek(message.entries || []);
         }
         if (message.type === 'streamStart') {
           if (streamMessage) {

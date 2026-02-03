@@ -13,6 +13,7 @@ import { mergeChatHistory } from './intent';
 import { listWorkspaceFiles } from './workspaceFiles';
 import { extractExplicitPaths, extractKeywords, extractMentionedFiles, findFilesByKeywords } from './fileSearch';
 import { getForgeSetting } from './settings';
+import { recordPayload, recordPrompt, recordResponse, recordStep } from './trace';
 import type { ChatHistoryItem, FileSelectionRequester, FileUpdate } from './types';
 import type { ForgeUiApi } from '../ui/api';
 
@@ -46,11 +47,13 @@ export async function requestSingleFileUpdate(
     history,
     buildFullFileMessages(instruction, relativePath, originalContent)
   );
+  recordPrompt(`Edit prompt (single): ${relativePath}`, messages, true);
 
   let updatedContent: string;
   try {
     const response = await callChatCompletion({}, messages, signal);
     updatedContent = extractUpdatedFile(response);
+    recordResponse(`Edit response (single): ${relativePath}`, updatedContent);
   } catch (error) {
     if (isAbortError(error)) {
       logOutput(output, panelApi, 'LLM request aborted.');
@@ -118,6 +121,7 @@ export async function requestMultiFileUpdate(
     !shouldSkipPicker && autoSelectedFiles.length === 0 && suggestedFiles.length > 1;
 
   if (autoSelectedFiles.length > 0) {
+    recordStep('File selection (auto)', autoSelectedFiles.join('\n'));
     return buildUpdatesFromUserSelection(
       autoSelectedFiles,
       rootPath,
@@ -139,6 +143,7 @@ export async function requestMultiFileUpdate(
         return null;
       }
       if (userSelection.files.length > 0) {
+        recordStep('File selection (manual)', userSelection.files.join('\n'));
         lastManualSelection = userSelection.files;
         return buildUpdatesFromUserSelection(
           userSelection.files,
@@ -184,8 +189,10 @@ export async function requestMultiFileUpdate(
       output,
       panelApi,
       signal,
-      'selection'
+      'selection',
+      'File selection'
     );
+    recordPayload('File selection JSON', JSON.stringify(payload, null, 2));
     selectedFiles = Array.isArray(payload.files) ? payload.files : [];
     logVerbose(output, panelApi, `LLM selected files: ${selectedFiles.join(', ') || '(none)'}`);
   } catch (error) {
@@ -220,6 +227,7 @@ export async function requestMultiFileUpdate(
     return null;
   }
   logOutput(output, panelApi, `Selected files: ${resolved.map((file) => file.relativePath).join(', ')}`);
+  recordStep('Selected files', resolved.map((file) => file.relativePath).join('\n'));
 
   const filePayloads = resolved.map((entry) => ({
     path: entry.relativePath,
@@ -430,12 +438,33 @@ function resolveWorkspacePath(
   if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
     return null;
   }
+  if (hasBlockedPathSegment(relativePath)) {
+    return null;
+  }
   return { fullPath, relativePath };
 }
 
 /** Normalize paths for case-insensitive matching. */
 function normalizePathForMatch(value: string): string {
   return value.replace(/\\/g, '/').toLowerCase();
+}
+
+function hasBlockedPathSegment(value: string): boolean {
+  const parts = value.split(path.sep).map((part) => part.toLowerCase());
+  const blocked = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    'out',
+    'build',
+    'coverage',
+    '.next',
+    '.nuxt',
+    '.svelte-kit',
+    '.vite',
+    '.cache'
+  ]);
+  return parts.some((part) => blocked.has(part));
 }
 
 /** Build the prompt for selecting files relevant to the instruction. */
@@ -673,19 +702,28 @@ async function requestJsonPayloadWithRetries(
   panelApi: ForgeUiApi | undefined,
   signal: AbortSignal | undefined,
   mode: JsonRetryMode,
+  traceLabel?: string,
   maxRetries: number = MAX_JSON_RETRIES
 ): Promise<{ files?: unknown }> {
   let lastError: unknown;
+  const labelBase = traceLabel ?? (mode === 'selection' ? 'File selection' : 'Update');
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const attemptMessages = buildJsonRetryMessages(messages, attempt, mode);
     try {
+      const attemptLabel = attempt === 0 ? 'initial' : `retry ${attempt}/${maxRetries}`;
+      recordPrompt(`${labelBase} prompt (${attemptLabel})`, attemptMessages, true);
       const response = await callChatCompletion({}, attemptMessages, signal);
+      const raw = response.choices?.[0]?.message?.content?.trim() ?? '';
+      if (raw) {
+        recordResponse(`${labelBase} response (${attemptLabel})`, raw);
+      }
       return extractJsonPayload(response);
     } catch (error) {
       if (isAbortError(error)) {
         throw error;
       }
       lastError = error;
+      recordStep(`${labelBase} JSON error`, String(error));
       if (attempt === 0) {
         logOutput(output, panelApi, `LLM error: ${String(error)}`);
       } else {
@@ -714,12 +752,17 @@ async function requestUpdatesInChunks(
   const chunks = chunkFilePayloads(filePayloads, maxFiles, maxChars);
   if (chunks.length > 1) {
     logVerbose(output, panelApi, `Chunking update into ${chunks.length} batches.`);
+    recordStep('Update chunking', `Split into ${chunks.length} batches (max ${maxFiles} files / ${maxChars} chars).`);
+  } else {
+    recordStep('Update chunking', `Single batch (max ${maxFiles} files / ${maxChars} chars).`);
   }
 
   const updates: Array<{ path: string; content: string }> = [];
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     const label = chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : '';
+    const chunkFiles = chunk.map((file) => file.path).join('\n');
+    recordStep(`Update chunk ${index + 1}/${chunks.length}`, chunkFiles || '(no files)');
     panelApi?.setStatus(`Requesting LLM${label}...`);
     const updateMessages = mergeChatHistory(
       history,
@@ -735,8 +778,10 @@ async function requestUpdatesInChunks(
       output,
       panelApi,
       signal,
-      'update'
+      'update',
+      `Update chunk ${index + 1}/${chunks.length}`
     );
+    recordPayload(`Update JSON ${index + 1}/${chunks.length}`, JSON.stringify(payload, null, 2));
     const chunkUpdates = Array.isArray(payload.files) ? payload.files : [];
     logVerbose(output, panelApi, `LLM returned updates for ${chunkUpdates.length} files${label}.`);
     updates.push(...chunkUpdates);
