@@ -5,7 +5,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 **Status**
 - Phase 0-6 complete (UI + workflows + Git Manager)
 - Phase 7: UX polish + hardening (deferred)
-- Phase 8: capability upgrades (in progress)
+- Phase 8: capability upgrades (in progress; Q&A citations, JSON retries, chunked updates, clarification proposals, Git intent detection shipped)
 
 **Why Forge**
 - On-prem and offline-friendly
@@ -24,13 +24,16 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 
 **Capabilities**
 - Single-file or multi-file edits with explicit selection
-- Automatic file targeting and creation for “create …” prompts
+- Automatic file targeting and creation for "create ..." prompts
 - Inline diff preview and action/purpose summaries
-- Validation runs (test/typecheck/lint/build) with optional auto-fix
-- Q&A about project context and file contents
+- Validation runs (test/typecheck/lint/build) with optional auto-fix (runs all available commands, not fail-fast)
+- Grounded Q&A about project context and file contents with citations + confidence
 - Optional Git workflow (stage/commit/push) with approvals
+- Git intent detection (explicit or LLM-based "smart" mode)
 - Multi-round clarification when requirements are ambiguous
+- Clarification proposals (Forge can propose best-guess answers and a plan)
 - JSON output retries + chunked update requests for reliability
+- Inline "Peek" panel showing steps, prompts, raw JSON payloads, diffs, and validation output (system prompts hidden; secrets redacted)
 
 **Limits**
 - No hidden Git actions
@@ -38,6 +41,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - No file edits without explicit approval (unless `forge.skipConfirmations` is enabled)
 - File edits require JSON payloads (no partial patch streaming)
 - Depth-limited workspace scan for large repos
+- Peek output truncates large payloads for safety
 
 ## Quickstart (Local Setup)
 
@@ -92,6 +96,18 @@ Key settings:
 - `forge.llmModel` (default: `Qwen/Qwen2.5-Coder-32B-Instruct-AWQ`)
 - `forge.enableMultiFile`
 
+**Profiles**
+- `auto`: fastest flow, minimal prompts, auto-accepts clarification proposals, still confirms Git actions
+- `balanced`: safer defaults with confirmations and clarification checks
+- `manual`: ask before most actions
+
+**Advanced settings (selected)**
+- `forge.skipCreateFilePicker`: skip the file picker when creating new files
+- `forge.maxFilesPerUpdate` / `forge.maxUpdateChars`: chunking limits for multi-file updates
+- `forge.clarifySuggestAnswers` / `forge.clarifyConfirmSuggestions`: control clarification proposals
+- `forge.gitIntentMode` / `forge.gitConfirmActions`: Git intent detection + confirmation
+- `forge.qaMinSources` / `forge.qaMaxFiles`: Q&A grounding thresholds
+
 Environment variables:
 - `FORGE_LLM_ENDPOINT`
 - `FORGE_LLM_MODEL`
@@ -122,13 +138,13 @@ npm run compile
 
 **Ollama (local, OpenAI-compatible API)**
 
-Ollama exposes an OpenAI-compatible API at `http://localhost:11434/v1` and expects a local model name that you have pulled. citeturn0search0turn0search1
+Ollama exposes an OpenAI-compatible API at `http://localhost:11434/v1` and expects a local model name that you have pulled.
 
 1. Pull a model:
 ```bash
 ollama pull gpt-oss:20b
 ```
-citeturn0search0
+
 
 2. Point Forge at Ollama:
 ```json
@@ -138,11 +154,11 @@ ollama pull gpt-oss:20b
   "forge.llmApiKey": "ollama"
 }
 ```
-The `api_key` is required by the OpenAI-compatible client but is ignored by Ollama. citeturn0search0
+The `api_key` is required by the OpenAI-compatible client but is ignored by Ollama.
 
 **OpenAI API (hosted)**
 
-OpenAI’s API uses Bearer authentication and the base endpoint `https://api.openai.com/v1`. citeturn0search3
+OpenAI's API uses Bearer authentication and the base endpoint `https://api.openai.com/v1`.
 
 ```json
 {
@@ -151,7 +167,7 @@ OpenAI’s API uses Bearer authentication and the base endpoint `https://api.ope
   "forge.llmApiKey": "<OPENAI_API_KEY>"
 }
 ```
-Use a model name you have access to in your OpenAI account, and keep the API key secret. citeturn0search3
+Use a model name you have access to in your OpenAI account, and keep the API key secret.
 
 ## Build, Install, Deploy
 
@@ -181,11 +197,12 @@ code --install-extension forge-0.0.1.vsix
 5. Apply changes and optionally run validation.
 
 Example prompts:
-- “Add comments to App.tsx”
-- “Remove unused imports in Timesheet.tsx”
-- “Fix validation errors for this project”
-- “How many files are in this repo?”
-- “Show me the content of src/main.tsx”
+- "Add comments to App.tsx"
+- "Remove unused imports in Timesheet.tsx"
+- "Fix validation errors for this project"
+- "How many files are in this repo?"
+- "Show me the content of src/main.tsx"
+- "Create a landing page (Forge will auto-select/ask/assume, then propose a plan)"
 
 ## Git Commands
 - `Forge: Git Stage`
@@ -222,6 +239,7 @@ Expected:
 - JSON payloads can still fail on very large outputs, even with retries
 - Very large diffs may slow down LLM responses
 - File selection relies on file list + symbol index (no semantic search yet)
+- Peek content is truncated for very large prompts/output blocks
 
 ## Roadmap (Phases)
 Phase 0 - Foundation
@@ -270,6 +288,8 @@ Phase 8 - Capability upgrades (in progress)
 - Self-verification and requirement coverage checks
 - JSON repair + stronger output validation
 - Smarter file targeting confidence thresholds
+- Clarification proposals with user verification
+- Git intent detection improvements
 
 ## Release Notes
 v0.1
