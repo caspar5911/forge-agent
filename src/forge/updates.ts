@@ -82,6 +82,8 @@ export async function requestMultiFileUpdate(
   extraContext?: string,
   signal?: AbortSignal
 ): Promise<FileUpdate[] | null> {
+  const config = vscode.workspace.getConfiguration('forge');
+  const skipCreateFilePicker = config.get<boolean>('skipCreateFilePicker') === true;
   const contextObject = harvestContext();
   const filesList = contextObject.files && contextObject.files.length > 0
     ? contextObject.files
@@ -98,32 +100,61 @@ export async function requestMultiFileUpdate(
   );
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
   const allowNewFiles = shouldAllowNewFiles(instruction);
-  const userSelection = await requestUserFileSelection(filesList, preselected, panel, viewProvider);
-  if (userSelection) {
-    if (userSelection.cancelled) {
-      logOutput(output, panelApi, 'File selection cancelled.');
-      return null;
-    }
-    if (userSelection.files.length > 0) {
-      lastManualSelection = userSelection.files;
-      return buildUpdatesFromUserSelection(
-        userSelection.files,
-        rootPath,
-        instruction,
-        activeRelativePath,
-        output,
-        panelApi,
-        extraContext,
-        signal
-      );
-    }
-    if (!allowNewFiles) {
-      logOutput(
-        output,
-        panelApi,
-        'No files selected. Please specify which files to edit or provide more context.'
-      );
-      return null;
+  const explicitPaths = extractExplicitPaths(instruction);
+  const mentionedFiles = extractMentionedFiles(instruction, filesList);
+  const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths]));
+  const isSmallEdit = isSmallEditInstruction(instruction);
+  const autoSelectedFiles =
+    directFiles.length > 0
+      ? directFiles
+      : isSmallEdit && suggestedFiles.length === 1
+        ? suggestedFiles
+        : [];
+  const shouldSkipPicker = allowNewFiles && skipCreateFilePicker;
+  const shouldOfferPicker =
+    !shouldSkipPicker && autoSelectedFiles.length === 0 && suggestedFiles.length > 1;
+
+  if (autoSelectedFiles.length > 0) {
+    return buildUpdatesFromUserSelection(
+      autoSelectedFiles,
+      rootPath,
+      instruction,
+      activeRelativePath,
+      output,
+      panelApi,
+      extraContext,
+      signal
+    );
+  }
+
+  if (shouldOfferPicker) {
+    const userSelection = await requestUserFileSelection(filesList, preselected, panel, viewProvider);
+    if (userSelection) {
+      if (userSelection.cancelled) {
+        logOutput(output, panelApi, 'File selection cancelled.');
+        return null;
+      }
+      if (userSelection.files.length > 0) {
+        lastManualSelection = userSelection.files;
+        return buildUpdatesFromUserSelection(
+          userSelection.files,
+          rootPath,
+          instruction,
+          activeRelativePath,
+          output,
+          panelApi,
+          extraContext,
+          signal
+        );
+      }
+      if (!allowNewFiles) {
+        logOutput(
+          output,
+          panelApi,
+          'No files selected. Please specify which files to edit or provide more context.'
+        );
+        return null;
+      }
     }
   }
 
@@ -157,8 +188,6 @@ export async function requestMultiFileUpdate(
     return null;
   }
 
-  const mentionedFiles = extractMentionedFiles(instruction, filesList);
-  const explicitPaths = extractExplicitPaths(instruction);
   const uniquePaths = Array.from(
     new Set([...selectedFiles.map((item) => String(item)), ...mentionedFiles, ...explicitPaths])
   );
@@ -391,6 +420,11 @@ function shouldAllowComments(instruction: string): boolean {
 /** Decide whether to allow creating new files based on the instruction. */
 function shouldAllowNewFiles(instruction: string): boolean {
   return /\b(create|add|new|generate|scaffold|bootstrap|website|web\s*page|html|css)\b/i.test(instruction);
+}
+
+/** Heuristic: detect small, localized edits that likely target a single file. */
+function isSmallEditInstruction(instruction: string): boolean {
+  return /\b(typo|spelling|format|reformat|lint|cleanup|minor|small|simple|rename|comment|docs?)\b/i.test(instruction);
 }
 
 /** Resolve and validate a workspace-relative file path. */
