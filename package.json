@@ -11,6 +11,15 @@
     "Other"
   ],
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:forge.run",
+    "onCommand:forge.ui",
+    "onCommand:forge.context",
+    "onCommand:forge.gitStage",
+    "onCommand:forge.gitCommit",
+    "onCommand:forge.gitPush",
+    "onView:forge.view"
+  ],
   "contributes": {
     "commands": [
       {
