@@ -1,58 +1,58 @@
 # Forge
 
-Forge is an on-prem, agentic coding assistant built as a VS Code extension. It turns short instructions into safe, validated code changes using a local LLM and keeps control explicit and auditable.
+Forge is an on-prem, agentic coding assistant built as a VS Code extension. It turns short instructions into safe, validated code changes using a local LLM while keeping control explicit and auditable.
 
-## Status
+**Status**
 - Phase 0-6 complete (UI + workflows + Git Manager)
-- Phase 7: UX polish + hardening (planned)
+- Phase 7: UX polish + hardening (deferred)
+- Phase 8: capability upgrades (in progress)
 
-## Overview
-- VS Code UI panel + sidebar view
-- Single-file or multi-file edits with explicit selection
-- Inline diff preview and action/purpose summaries
-- Automatic validation with optional auto-fix retries
-- Q&A about project context and file contents
-- Optional Git workflow (stage/commit/push) with approvals
-- Local OpenAI-compatible LLM integration (vLLM tested)
+**Why Forge**
+- On-prem and offline-friendly
+- Explicit diff previews and confirmations
+- Validation + auto-fix loops
+- Local OpenAI-compatible LLM support (vLLM tested)
 
-## Architecture
-- `src/extension.ts`: command wiring, UI registration, and lifecycle hooks
+**Architecture**
+- `src/extension.ts`: command wiring, UI registration, lifecycle hooks
 - `src/extension/runtime.ts`: run orchestration and state management
 - `src/extension/lifecycle.ts`: settings sync + keep-alive
 - `src/forge/`: intent detection, file selection, updates, validation, Git actions
 - `src/ui/`: webview UI, panel, sidebar view
 - `src/llm/`: OpenAI-compatible HTTP client
-- `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: local context, symbol index, validation, Git helpers
+- `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: context, symbol index, validation, Git helpers
 
-## Capabilities
-- Edit files via LLM-generated full-file updates
-- Select targets automatically or via file picker
-- Validate changes and attempt auto-fixes
-- Answer project questions using harvested context
-- Stage, commit, and push with explicit approval
-- Optional commit message suggestions
+**Capabilities**
+- Single-file or multi-file edits with explicit selection
+- Automatic file targeting and creation for “create …” prompts
+- Inline diff preview and action/purpose summaries
+- Validation runs (test/typecheck/lint/build) with optional auto-fix
+- Q&A about project context and file contents
+- Optional Git workflow (stage/commit/push) with approvals
+- Multi-round clarification when requirements are ambiguous
+- JSON output retries + chunked update requests for reliability
 
-## Limits
+**Limits**
 - No hidden Git actions
 - No background code execution
-- No file edits without explicit approval (unless skipConfirmations is enabled)
+- No file edits without explicit approval (unless `forge.skipConfirmations` is enabled)
 - File edits require JSON payloads (no partial patch streaming)
 - Depth-limited workspace scan for large repos
 
 ## Quickstart (Local Setup)
 
-### 1) Prereqs
+**1) Prereqs**
 - Node.js 18+
 - VS Code
 - Docker Desktop (WSL2 engine enabled)
 - NVIDIA drivers with WSL2 GPU support (32 GB VRAM recommended for 32B models)
 
-### 2) Install
+**2) Install**
 ```bash
 npm install
 ```
 
-### 3) Start vLLM (Docker Compose)
+**3) Start vLLM (Docker Compose)**
 Set your Hugging Face token:
 ```powershell
 $env:HUGGING_FACE_HUB_TOKEN="<HF_TOKEN>"
@@ -83,45 +83,33 @@ Verify:
 Invoke-RestMethod http://127.0.0.1:8000/v1/models
 ```
 
-### 4) Configure Forge (VS Code Settings)
-Open Settings and search for "Forge".
+**4) Configure Forge (VS Code Settings)**
+Open Settings and search for `Forge`, or edit `settings.json`.
 
 Key settings:
-- forge.llmEndpoint (default: http://127.0.0.1:8000/v1)
-- forge.llmModel (default: Qwen/Qwen2.5-Coder-32B-Instruct-AWQ)
-- forge.llmApiKey (optional)
-- forge.enableMultiFile
-- forge.autoValidation
-- forge.autoFixValidation
-- forge.autoFixMaxRetries
-- forge.skipTargetConfirmation
-- forge.skipConfirmations
-- forge.showDiffPreview
-- forge.llmTimeoutMs
-- forge.verboseLogs
-- forge.keepAliveSeconds
-- forge.enableGitWorkflow
-- forge.gitStageMode
-- forge.gitAutoMessage
-- forge.gitMessageStyle
-- forge.gitAutoPush
-- forge.projectSummaryMaxChars
-- forge.projectSummaryMaxFiles
-- forge.projectSummaryMaxFileBytes
-- forge.projectSummaryChunkChars
-- forge.projectSummaryMaxChunks
-- forge.chatHistoryMaxMessages
-- forge.chatHistoryMaxChars
-- forge.intentUseLLM
-- forge.clarifyBeforeEdit
-- forge.clarifyOnlyIf
-- forge.clarifyAutoAssume
+- `forge.llmEndpoint` (default: `http://127.0.0.1:8000/v1`)
+- `forge.llmModel` (default: `Qwen/Qwen2.5-Coder-32B-Instruct-AWQ`)
+- `forge.enableMultiFile`
+- `forge.autoValidation`
+- `forge.autoFixValidation`
+- `forge.autoFixMaxRetries`
+- `forge.skipTargetConfirmation`
+- `forge.skipConfirmations`
+- `forge.showDiffPreview`
+- `forge.skipCreateFilePicker`
+- `forge.maxFilesPerUpdate`
+- `forge.maxUpdateChars`
+- `forge.clarifyBeforeEdit`
+- `forge.clarifyOnlyIf`
+- `forge.clarifyAutoAssume`
+- `forge.clarifyMaxQuestions`
+- `forge.clarifyMaxRounds`
 
 Environment variables:
-- FORGE_LLM_ENDPOINT
-- FORGE_LLM_MODEL
-- FORGE_LLM_API_KEY
-- FORGE_LLM_TIMEOUT_MS
+- `FORGE_LLM_ENDPOINT`
+- `FORGE_LLM_MODEL`
+- `FORGE_LLM_API_KEY`
+- `FORGE_LLM_TIMEOUT_MS`
 
 Example settings:
 ```json
@@ -134,7 +122,10 @@ Example settings:
   "forge.autoFixMaxRetries": 5,
   "forge.skipTargetConfirmation": false,
   "forge.skipConfirmations": false,
-  "forge.showDiffPreview": false,
+  "forge.showDiffPreview": true,
+  "forge.skipCreateFilePicker": true,
+  "forge.maxFilesPerUpdate": 6,
+  "forge.maxUpdateChars": 60000,
   "forge.llmTimeoutMs": 120000,
   "forge.verboseLogs": false,
   "forge.keepAliveSeconds": 0,
@@ -152,38 +143,95 @@ Example settings:
   "forge.chatHistoryMaxChars": 8000,
   "forge.intentUseLLM": true,
   "forge.clarifyBeforeEdit": true,
-  "forge.clarifyOnlyIf": "very-unclear",
-  "forge.clarifyAutoAssume": true
+  "forge.clarifyOnlyIf": "always",
+  "forge.clarifyAutoAssume": false,
+  "forge.clarifyMaxQuestions": 6,
+  "forge.clarifyMaxRounds": 3
 }
 ```
 
-### 5) Build & Run
+**5) Build & Run (Dev)**
 ```bash
 npm run compile
 ```
 
-- Press F5 to open the Extension Development Host.
-- Run "Forge: UI" or click the Forge Activity Bar icon.
+- Press `F5` to open the Extension Development Host.
+- Run `Forge: UI` or click the Forge Activity Bar icon.
+
+## LLM Backends
+
+**Ollama (local, OpenAI-compatible API)**
+
+Ollama exposes an OpenAI-compatible API at `http://localhost:11434/v1` and expects a local model name that you have pulled. citeturn0search0turn0search1
+
+1. Pull a model:
+```bash
+ollama pull gpt-oss:20b
+```
+citeturn0search0
+
+2. Point Forge at Ollama:
+```json
+{
+  "forge.llmEndpoint": "http://127.0.0.1:11434/v1",
+  "forge.llmModel": "gpt-oss:20b",
+  "forge.llmApiKey": "ollama"
+}
+```
+The `api_key` is required by the OpenAI-compatible client but is ignored by Ollama. citeturn0search0
+
+**OpenAI API (hosted)**
+
+OpenAI’s API uses Bearer authentication and the base endpoint `https://api.openai.com/v1`. citeturn0search3
+
+```json
+{
+  "forge.llmEndpoint": "https://api.openai.com/v1",
+  "forge.llmModel": "<MODEL_NAME>",
+  "forge.llmApiKey": "<OPENAI_API_KEY>"
+}
+```
+Use a model name you have access to in your OpenAI account, and keep the API key secret. citeturn0search3
+
+## Build, Install, Deploy
+
+**Local test install (VSIX)**
+```bash
+npx @vscode/vsce package
+```
+
+Install the generated `.vsix`:
+```bash
+code --install-extension forge-0.0.1.vsix
+```
+
+**Dev host install (no VSIX)**
+- Run `npm run compile`
+- Press `F5` to open the Extension Development Host
+
+**Deployment**
+- Package: `npx @vscode/vsce package`
+- Publish: `npx @vscode/vsce publish` (requires publisher account and login)
 
 ## Usage
-1) Open a file (single-file mode) or enable multi-file mode.
-2) Enter an instruction in the UI.
-3) Confirm file selection (multi-file).
-4) Review inline diff preview.
-5) Apply changes and optionally run validation.
+1. Open a file (single-file mode) or enable multi-file mode.
+2. Enter an instruction in the UI.
+3. Confirm file selection when prompted (or auto-selected).
+4. Review inline diff preview.
+5. Apply changes and optionally run validation.
 
 Example prompts:
-- "Add comments to App.tsx"
-- "Remove unused imports in Timesheet.tsx"
-- "Fix validation errors for this project"
-- "How many files are in this repo?"
-- "Show me the content of src/main.tsx"
+- “Add comments to App.tsx”
+- “Remove unused imports in Timesheet.tsx”
+- “Fix validation errors for this project”
+- “How many files are in this repo?”
+- “Show me the content of src/main.tsx”
 
 ## Git Commands
-- Forge: Git Stage
-- Forge: Git Commit
-- Forge: Git Push
-- Optional post-edit workflow via forge.enableGitWorkflow
+- `Forge: Git Stage`
+- `Forge: Git Commit`
+- `Forge: Git Push`
+- Optional post-edit workflow via `forge.enableGitWorkflow`
 
 ## UI Shortcuts
 - Enter: send
@@ -195,7 +243,7 @@ Example prompts:
 ## Performance Notes
 - First run includes model warmup (can take minutes)
 - Subsequent requests are faster if the model stays loaded
-- Large multi-file updates can be slower due to JSON output size
+- Large multi-file updates may be chunked into multiple LLM calls
 
 ## Model Compatibility
 Tested:
@@ -211,22 +259,9 @@ Expected:
 - API keys stored in VS Code settings or environment variables
 
 ## Known Issues / Limitations
-- JSON payloads can fail if the model emits invalid JSON
+- JSON payloads can still fail on very large outputs, even with retries
 - Very large diffs may slow down LLM responses
 - File selection relies on file list + symbol index (no semantic search yet)
-
-## LLM Usage Policy
-- Context Harvester: NO
-- Task Compressor: YES
-- Planner: YES
-- Tool Executor: NO
-- Validation: NO
-- Git Execution: NO
-- Commit Messages: YES
-
-## Troubleshooting
-- If the model fails to start, verify GPU access in Docker and set HUGGING_FACE_HUB_TOKEN.
-- If the UI seems stuck, use Esc (stop) and check Output: "Forge".
 
 ## Roadmap (Phases)
 Phase 0 - Foundation
@@ -266,7 +301,15 @@ Phase 6 - Git Manager
 - Optional auto message suggestion
 - Optional auto push (only when skipConfirmations is enabled)
 
-Phase 7 - UX polish + hardening
+Phase 7 - UX polish + hardening (deferred)
+- UX refinement and edge-case hardening
+
+Phase 8 - Capability upgrades (in progress)
+- Grounded Q&A with retrieval and source citations
+- Plan-then-execute for complex tasks
+- Self-verification and requirement coverage checks
+- JSON repair + stronger output validation
+- Smarter file targeting confidence thresholds
 
 ## Release Notes
 v0.1
