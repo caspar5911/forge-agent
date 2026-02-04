@@ -18,6 +18,6 @@ services:
       - --dtype
       - auto
       - --max-model-len
-      - "12288"
+      - "32768"
       - --gpu-memory-utilization
       - "0.92"

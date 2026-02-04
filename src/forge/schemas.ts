@@ -207,3 +207,15 @@ export const TOOL_CALL_SCHEMA = {
     }
   ]
 } as const;
+
+export const RETRIEVAL_RANK_SCHEMA = {
+  type: 'object',
+  properties: {
+    ordered: {
+      type: 'array',
+      items: { type: 'string' }
+    }
+  },
+  required: ['ordered'],
+  additionalProperties: false
+} as const;

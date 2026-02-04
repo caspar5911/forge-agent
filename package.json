@@ -354,7 +354,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "eval": "tsx scripts/run-evals.ts"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

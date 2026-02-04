@@ -1,0 +1,102 @@
+[
+  {
+    "id": "json-01",
+    "prompt": "Return JSON only: {\"status\":\"ok\"}.",
+    "expect": { "json": true, "contains": ["\"status\"", "ok"] }
+  },
+  {
+    "id": "json-02",
+    "prompt": "Return JSON only: {\"intent\":\"fix\",\"confidence\":0.9}.",
+    "expect": { "json": true, "contains": ["\"intent\"", "fix"] }
+  },
+  {
+    "id": "json-03",
+    "prompt": "Return JSON only: {\"files\":[\"src/App.tsx\",\"src/main.tsx\"]}.",
+    "expect": { "json": true, "contains": ["\"files\""] }
+  },
+  {
+    "id": "json-04",
+    "prompt": "Return JSON only: {\"plan\":[\"step 1\",\"step 2\"]}.",
+    "expect": { "json": true, "contains": ["\"plan\""] }
+  },
+  {
+    "id": "json-05",
+    "prompt": "Return JSON only: {\"tool\":\"read_file\",\"path\":\"src/App.tsx\"}.",
+    "expect": { "json": true, "contains": ["\"tool\"", "read_file"] }
+  },
+  {
+    "id": "json-06",
+    "prompt": "Return JSON only: {\"answers\":[\"A\"],\"plan\":[\"B\"]}.",
+    "expect": { "json": true, "contains": ["\"answers\"", "\"plan\""] }
+  },
+  {
+    "id": "json-07",
+    "prompt": "Return JSON only: {\"ordered\":[\"src/index.ts\",\"src/app.ts\"]}.",
+    "expect": { "json": true, "contains": ["\"ordered\""] }
+  },
+  {
+    "id": "json-08",
+    "prompt": "Return JSON only: {\"status\":\"pass\",\"issues\":[]}.",
+    "expect": { "json": true, "contains": ["\"status\"", "pass"] }
+  },
+  {
+    "id": "json-09",
+    "prompt": "Return JSON only: {\"message\":\"hello\",\"count\":2}.",
+    "expect": { "json": true, "contains": ["\"message\"", "hello"] }
+  },
+  {
+    "id": "json-10",
+    "prompt": "Return JSON only: {\"result\":{\"ok\":true}}.",
+    "expect": { "json": true, "contains": ["\"result\""] }
+  },
+  {
+    "id": "text-01",
+    "prompt": "Reply with the single word: ok",
+    "expect": { "contains": ["ok"] }
+  },
+  {
+    "id": "text-02",
+    "prompt": "Reply with: DONE",
+    "expect": { "contains": ["DONE"] }
+  },
+  {
+    "id": "text-03",
+    "prompt": "Reply with the exact string: Forge ready.",
+    "expect": { "contains": ["Forge ready."] }
+  },
+  {
+    "id": "text-04",
+    "prompt": "Answer with a 3-step list labeled 1., 2., 3.",
+    "expect": { "contains": ["1.", "2.", "3."] }
+  },
+  {
+    "id": "text-05",
+    "prompt": "Reply with the phrase: plan then execute.",
+    "expect": { "contains": ["plan then execute"] }
+  },
+  {
+    "id": "text-06",
+    "prompt": "Reply with: PASS",
+    "expect": { "contains": ["PASS"] }
+  },
+  {
+    "id": "text-07",
+    "prompt": "Reply with the word: VERIFIED",
+    "expect": { "contains": ["VERIFIED"] }
+  },
+  {
+    "id": "text-08",
+    "prompt": "Reply with: JSON OK",
+    "expect": { "contains": ["JSON OK"] }
+  },
+  {
+    "id": "text-09",
+    "prompt": "Reply with: CONTEXT TRIMMED",
+    "expect": { "contains": ["CONTEXT TRIMMED"] }
+  },
+  {
+    "id": "text-10",
+    "prompt": "Reply with the word: COMPLETE",
+    "expect": { "contains": ["COMPLETE"] }
+  }
+]

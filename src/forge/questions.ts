@@ -9,6 +9,7 @@ import { isAbortError, logOutput } from './logging';
 import { recordPrompt, recordResponse, recordStep } from './trace';
 import { listWorkspaceFiles } from './workspaceFiles';
 import { extractKeywords, extractMentionedFiles, findFileByBasename } from './fileSearch';
+import { rankFilesByRelevance } from './retrievalRanker';
 import { mergeChatHistory } from './intent';
 import type { ChatHistoryItem } from './types';
 import type { ForgeUiApi } from '../ui/api';
@@ -137,7 +138,7 @@ export async function answerQuestion(
     }
   }
 
-  const retrieval = collectRelevantSnippets(instruction, rootPath, filesList, config);
+  const retrieval = await collectRelevantSnippets(instruction, rootPath, filesList, config, signal);
   if (retrieval.sources.length > 0) {
     const sourceList = retrieval.sources
       .map((source) => `${source.id} ${source.path}:${source.startLine}-${source.endLine}`)
@@ -512,12 +513,13 @@ type RetrievalResult = {
   keywordCoverage: number;
 };
 
-function collectRelevantSnippets(
+async function collectRelevantSnippets(
   instruction: string,
   rootPath: string,
   filesList: string[],
-  config: vscode.WorkspaceConfiguration
-): RetrievalResult {
+  config: vscode.WorkspaceConfiguration,
+  signal?: AbortSignal
+): Promise<RetrievalResult> {
   const maxFiles = Math.max(1, config.get<number>('qaMaxFiles') ?? 12);
   const maxSnippets = Math.max(1, config.get<number>('qaMaxSnippets') ?? 8);
   const snippetLines = Math.max(1, config.get<number>('qaSnippetLines') ?? 3);
@@ -575,11 +577,24 @@ function collectRelevantSnippets(
     .sort((a, b) => b.score - a.score)
     .slice(0, maxFiles);
 
+  let ordered = ranked.map((item) => item.file);
+  if (ordered.length > 1) {
+    ordered = await rankFilesByRelevance(instruction, ordered, rootPath, {
+      maxCandidates: maxFiles,
+      maxPreviewChars: 400,
+      signal
+    });
+  }
+
+  const rankedByOrder = ordered
+    .map((file) => ranked.find((item) => item.file === file))
+    .filter((item): item is typeof ranked[number] => Boolean(item));
+
   const sources: SourceSnippet[] = [];
   const foundKeywords = new Set<string>();
   let snippetId = 1;
 
-  for (const entry of ranked) {
+  for (const entry of rankedByOrder) {
     if (sources.length >= maxSnippets) {
       break;
     }

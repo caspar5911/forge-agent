@@ -39,6 +39,10 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Self-verification pass after edits (flags unmet requirements)
 - Agent loop for fixes (diagnose -> edit -> re-test -> repeat)
 - Context-first editing (auto-snippets from relevant files)
+- Semantic re-ranking for retrieval (LLM-assisted)
+- Token budget enforcement (auto-trim + retry on context-length errors)
+- Tool-aware preflight (read file / diff / validation to ground edits)
+- Evaluation harness with regression snapshots (`eval/results/`)
 - Inline "Peek" panel showing steps, prompts, raw JSON payloads, diffs, and validation output (system prompts hidden; secrets redacted)
 
 **Limits**
@@ -50,6 +54,29 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Peek output truncates large payloads for safety
 - Some backends may not support schema-constrained decoding; Forge falls back to repair + retry
 - Planning/verification adds extra LLM calls (slower but more reliable)
+- Token trimming can drop older context when requests exceed the model limit
+
+## Capability Tiers (1-4)
+
+**Tier 1 — Must-have**
+- Token budget enforcement (auto-trim before send)
+- Strong retrieval + re-ranking (semantic search)
+- Agent loop with verification + retries
+
+**Tier 2 — Big multipliers**
+- Evaluation suite + regression tracking
+- Tool-aware planning (choose tools, not just edit)
+- Model routing (plan/verify/summary on different models)
+
+**Tier 3 — Advanced**
+- Persistent repo memory summary + change log
+- Multi-source retrieval (symbols + embeddings + tests)
+- Cross-file impact analysis (tests touched, build impact)
+
+**Tier 4 — Stretch**
+- Multi-agent orchestration (planner + implementer + reviewer)
+- Continuous eval gating before applying changes
+- Adaptive tool selection policies per repo
 
 ## Quickstart (Local Setup)
 
@@ -128,6 +155,7 @@ Environment variables:
 - `FORGE_LLM_MODEL`
 - `FORGE_LLM_API_KEY`
 - `FORGE_LLM_TIMEOUT_MS`
+- `FORGE_LLM_MAX_INPUT_TOKENS` (auto-trim input before send)
 
 Example settings (minimal):
 ```json
@@ -237,6 +265,13 @@ Example prompts:
 - Subsequent requests are faster if the model stays loaded
 - Large multi-file updates may be chunked into multiple LLM calls
 
+## Evaluation
+Run the built-in prompt suite and write snapshots to `eval/results/`:
+```bash
+npm run eval
+```
+The latest run is stored in `eval/results/latest.json`.
+
 ## Model Compatibility
 Tested:
 - Qwen/Qwen2.5-Coder-32B-Instruct-AWQ (vLLM)
@@ -253,7 +288,7 @@ Expected:
 ## Known Issues / Limitations
 - JSON payloads can still fail on very large outputs, even with retries
 - Very large diffs may slow down LLM responses
-- File selection relies on file list + symbol index (no semantic search yet)
+- Retrieval uses LLM re-ranking (no embeddings yet)
 - Peek content is truncated for very large prompts/output blocks
 
 ## Roadmap (Phases)

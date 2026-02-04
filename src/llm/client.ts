@@ -3,6 +3,7 @@ import * as http from 'http';
 import * as https from 'https';
 import type { LLMConfig, ResolvedLLMConfig } from './config';
 import { resolveLLMConfig } from './config';
+import { parseTokenLimitFromError, trimMessagesToTokenBudget } from './tokenBudget';
 
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -86,12 +87,14 @@ function requestChatCompletion(
   config: ResolvedLLMConfig,
   messages: ChatMessage[],
   signal?: AbortSignal,
-  options?: ChatCompletionOptions
+  options?: ChatCompletionOptions,
+  retryOnTokenLimit: boolean = true
 ): Promise<ChatCompletionResponse> {
+  const prepared = applyTokenBudget(config, messages);
   const url = new URL(config.endpoint.replace(/\/$/, '') + '/chat/completions');
   const bodyObject: Record<string, unknown> = {
     model: config.model,
-    messages,
+    messages: prepared.messages,
     temperature: 0,
     stream: false
   };
@@ -132,6 +135,22 @@ function requestChatCompletion(
       });
       res.on('end', () => {
         if (res.statusCode && res.statusCode >= 400) {
+          if (retryOnTokenLimit) {
+            const maxTokens = parseTokenLimitFromError(data);
+            if (maxTokens) {
+              const trimmed = trimMessagesToTokenBudget(messages, maxTokens);
+              requestChatCompletion(
+                { ...config, maxInputTokens: maxTokens },
+                trimmed.messages,
+                signal,
+                options,
+                false
+              )
+                .then(resolve)
+                .catch(reject);
+              return;
+            }
+          }
           reject(new Error(`HTTP ${res.statusCode}: ${data}`));
           return;
         }
@@ -166,12 +185,14 @@ function requestChatCompletionStream(
   config: ResolvedLLMConfig,
   messages: ChatMessage[],
   onDelta: (text: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  retryOnTokenLimit: boolean = true
 ): Promise<string> {
   const url = new URL(config.endpoint.replace(/\/$/, '') + '/chat/completions');
+  const prepared = applyTokenBudget(config, messages);
   const body = JSON.stringify({
     model: config.model,
-    messages,
+    messages: prepared.messages,
     temperature: 0,
     stream: true
   });
@@ -201,6 +222,33 @@ function requestChatCompletionStream(
     let fullText = '';
 
     const req = requester.request(requestOptions, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        let errorBody = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          errorBody += chunk;
+        });
+        res.on('end', () => {
+          if (retryOnTokenLimit) {
+            const maxTokens = parseTokenLimitFromError(errorBody);
+            if (maxTokens) {
+              const trimmed = trimMessagesToTokenBudget(messages, maxTokens);
+              requestChatCompletionStream(
+                { ...config, maxInputTokens: maxTokens },
+                trimmed.messages,
+                onDelta,
+                signal,
+                false
+              )
+                .then(resolve)
+                .catch(reject);
+              return;
+            }
+          }
+          reject(new Error(`HTTP ${res.statusCode}: ${errorBody}`));
+        });
+        return;
+      }
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
         buffer += chunk;
@@ -230,10 +278,6 @@ function requestChatCompletionStream(
         }
       });
       res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}`));
-          return;
-        }
         resolve(fullText);
       });
     });
@@ -254,4 +298,14 @@ function requestChatCompletionStream(
     req.write(body);
     req.end();
   });
+}
+
+function applyTokenBudget(
+  config: ResolvedLLMConfig,
+  messages: ChatMessage[]
+): { messages: ChatMessage[]; trimmed: boolean; estimatedTokens: number } {
+  if (!config.maxInputTokens) {
+    return { messages, trimmed: false, estimatedTokens: 0 };
+  }
+  return trimMessagesToTokenBudget(messages, config.maxInputTokens);
 }

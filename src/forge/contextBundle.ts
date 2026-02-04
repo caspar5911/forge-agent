@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { extractMentionedFiles, findFilesByKeywords } from './fileSearch';
 import { listWorkspaceFiles } from './workspaceFiles';
+import { rankFilesByRelevance } from './retrievalRanker';
 
 type ContextBundle = {
   text: string;
@@ -13,20 +14,32 @@ export async function buildContextBundle(
   instruction: string,
   rootPath: string,
   maxFiles: number = 3,
-  maxCharsPerFile: number = 2000
+  maxCharsPerFile: number = 2000,
+  signal?: AbortSignal
 ): Promise<ContextBundle | null> {
   const filesList = listWorkspaceFiles(rootPath, 4, 2000);
   const mentioned = extractMentionedFiles(instruction, filesList);
   const keywordMatches = await findFilesByKeywords(instruction, rootPath, filesList);
-  const candidates = Array.from(new Set([...mentioned, ...keywordMatches])).slice(0, maxFiles);
+  const candidates = Array.from(new Set([...mentioned, ...keywordMatches]));
 
-  if (candidates.length === 0) {
+  let rankedCandidates = candidates;
+  if (candidates.length > 1) {
+    rankedCandidates = await rankFilesByRelevance(instruction, candidates, rootPath, {
+      maxCandidates: Math.max(maxFiles, 8),
+      maxPreviewChars: 400,
+      signal
+    });
+  }
+
+  const selected = rankedCandidates.slice(0, maxFiles);
+
+  if (selected.length === 0) {
     return null;
   }
 
   const snippets: string[] = [];
   const used: string[] = [];
-  for (const relativePath of candidates) {
+  for (const relativePath of selected) {
     const fullPath = path.join(rootPath, relativePath);
     let stat: fs.Stats;
     try {
