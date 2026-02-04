@@ -92,7 +92,8 @@ export async function requestMultiFileUpdate(
   viewProvider?: FileSelectionRequester | null,
   history?: ChatHistoryItem[],
   extraContext?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  scaffoldTypeOverride?: ScaffoldType
 ): Promise<FileUpdate[] | null> {
   const skipCreateFilePicker = getForgeSetting<boolean>('skipCreateFilePicker') === true;
   const bestEffortFix = getForgeSetting<boolean>('bestEffortFix') === true;
@@ -105,7 +106,7 @@ export async function requestMultiFileUpdate(
   }
   const hintNewFiles = autoCreateMissingFiles ? fixHints.missingFiles : [];
   const allowNewFiles = shouldAllowNewFiles(instruction) || hintNewFiles.length > 0;
-  const explicitPaths = Array.from(new Set([...extractExplicitPaths(instruction), ...hintNewFiles]));
+  const explicitPathsRaw = Array.from(new Set([...extractExplicitPaths(instruction), ...hintNewFiles]));
   if (fixHints.missingModules.length > 0) {
     recordStep('Fix hints', `Missing modules: ${fixHints.missingModules.join(', ')}`);
   }
@@ -119,11 +120,36 @@ export async function requestMultiFileUpdate(
     instruction += `\n\nMissing relative files detected: ${fixHints.missingFiles.join(', ')}. Create these files as needed.`;
   }
   const contextObject = harvestContext();
-  const filesList = contextObject.files && contextObject.files.length > 0
+  let filesList = contextObject.files && contextObject.files.length > 0
     ? contextObject.files
     : listWorkspaceFiles(rootPath, 6, 2000);
   if (fs.existsSync(path.join(rootPath, 'package.json')) && !filesList.includes('package.json')) {
     filesList.push('package.json');
+  }
+  const projectSubdir = detectProjectSubdir(filesList);
+  if (projectSubdir) {
+    recordStep('Project root hint', projectSubdir);
+  }
+  const mapToProjectRoot = (value: string) => applyProjectSubdir(value, projectSubdir);
+  const explicitPaths = explicitPathsRaw.map(mapToProjectRoot);
+  const mappedHintFiles = hintFiles.map(mapToProjectRoot);
+  const scaffold = maybeCreateScaffold(
+    rootPath,
+    instruction,
+    allowNewFiles,
+    filesList,
+    output,
+    panelApi,
+    scaffoldTypeOverride
+  );
+  if (scaffold) {
+    filesList = listWorkspaceFiles(rootPath, 6, 2000);
+    scaffold.files.forEach((file) => {
+      if (!filesList.includes(file)) {
+        filesList.push(file);
+      }
+    });
+    recordStep('Scaffold', `${scaffold.type}\n${scaffold.files.join('\n')}`);
   }
   if (filesList.length === 0 && !allowNewFiles && explicitPaths.length === 0) {
     logOutput(output, panelApi, 'No files found in workspace.');
@@ -132,8 +158,8 @@ export async function requestMultiFileUpdate(
 
   const suggestedFiles = suggestFilesForInstruction(instruction, filesList, getWorkspaceIndex());
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
-  const mentionedFiles = extractMentionedFiles(instruction, filesList);
-  const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths, ...hintFiles]));
+  const mentionedFiles = extractMentionedFiles(instruction, filesList).map(mapToProjectRoot);
+  const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths, ...mappedHintFiles]));
   const autoSelection = computeAutoSelection({
     directFiles,
     filesList,
@@ -154,7 +180,8 @@ export async function requestMultiFileUpdate(
       panelApi,
       extraContext,
       history,
-      signal
+      signal,
+      projectSubdir
     );
   }
 
@@ -177,7 +204,8 @@ export async function requestMultiFileUpdate(
           panelApi,
           extraContext,
           history,
-          signal
+          signal,
+          projectSubdir
         );
       }
       if (!allowNewFiles) {
@@ -216,7 +244,7 @@ export async function requestMultiFileUpdate(
       'File selection'
     );
     recordPayload('File selection JSON', JSON.stringify(payload, null, 2));
-    selectedFiles = Array.isArray(payload.files) ? payload.files : [];
+    selectedFiles = Array.isArray(payload.files) ? payload.files.map(mapToProjectRoot) : [];
     logVerbose(output, panelApi, `LLM selected files: ${selectedFiles.join(', ') || '(none)'}`);
   } catch (error) {
     if (isAbortError(error)) {
@@ -358,7 +386,8 @@ export async function attemptAutoFix(
     null,
     history,
     extraContext,
-    signal
+    signal,
+    undefined
   );
 
   if (!updates || updates.length === 0) {
@@ -486,6 +515,830 @@ function shouldAllowComments(instruction: string): boolean {
 /** Decide whether to allow creating new files based on the instruction. */
 function shouldAllowNewFiles(instruction: string): boolean {
   return /\b(create|add|new|generate|scaffold|bootstrap|website|web\s*page|html|css)\b/i.test(instruction);
+}
+
+export type ScaffoldType =
+  | 'static'
+  | 'react-vite'
+  | 'vue-vite'
+  | 'svelte-vite'
+  | 'nextjs'
+  | 'nuxt'
+  | 'astro';
+
+export type ScaffoldDecision = {
+  type: ScaffoldType;
+  source: 'explicit' | 'heuristic' | 'default';
+  reason: string;
+};
+
+type ScaffoldResult = {
+  type: ScaffoldType;
+  files: string[];
+};
+
+export function decideScaffoldStack(instruction: string, filesList: string[]): ScaffoldDecision | null {
+  if (!shouldAllowNewFiles(instruction) || filesList.length > 0) {
+    return null;
+  }
+
+  const explicit = detectExplicitScaffoldType(instruction);
+  if (explicit) {
+    return {
+      type: explicit,
+      source: 'explicit',
+      reason: 'Stack mentioned in prompt.'
+    };
+  }
+
+  if (needsAppFramework(instruction)) {
+    return {
+      type: 'react-vite',
+      source: 'heuristic',
+      reason: 'App-level features requested; using React + Vite.'
+    };
+  }
+
+  return {
+    type: 'static',
+    source: 'default',
+    reason: 'Defaulting to a static site for simple website requests.'
+  };
+}
+
+function maybeCreateScaffold(
+  rootPath: string,
+  instruction: string,
+  allowNewFiles: boolean,
+  filesList: string[],
+  output: vscode.OutputChannel,
+  panelApi?: ForgeUiApi,
+  scaffoldTypeOverride?: ScaffoldType
+): ScaffoldResult | null {
+  if (!allowNewFiles || filesList.length > 0) {
+    return null;
+  }
+
+  const decision = scaffoldTypeOverride
+    ? {
+        type: scaffoldTypeOverride,
+        source: 'explicit' as const,
+        reason: 'Selected before scaffolding.'
+      }
+    : decideScaffoldStack(instruction, filesList);
+  if (!decision) {
+    return null;
+  }
+  const files = createScaffold(rootPath, decision.type);
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  logOutput(output, panelApi, `Scaffolded ${decision.type} project files.`);
+  const showCommands = getForgeSetting<boolean>('showScaffoldCommands') !== false;
+  if (showCommands) {
+    const commands = getScaffoldCommands(decision.type);
+    if (commands.length > 0) {
+      logOutput(output, panelApi, 'Manual scaffold commands (optional):');
+      commands.forEach((command) => logOutput(output, panelApi, `- ${command}`));
+    }
+  }
+  return { type: decision.type, files };
+}
+
+function detectExplicitScaffoldType(instruction: string): ScaffoldType | null {
+  const lowered = instruction.toLowerCase();
+  if (/\bnext(\.js)?\b/.test(lowered)) {
+    return 'nextjs';
+  }
+  if (/\bnuxt\b/.test(lowered)) {
+    return 'nuxt';
+  }
+  if (/\bvue\b/.test(lowered)) {
+    return 'vue-vite';
+  }
+  if (/\bsvelte\b/.test(lowered)) {
+    return 'svelte-vite';
+  }
+  if (/\bastro\b/.test(lowered)) {
+    return 'astro';
+  }
+  if (/\breact\b/.test(lowered) || /\bvite\b/.test(lowered)) {
+    return 'react-vite';
+  }
+  return null;
+}
+
+function needsAppFramework(instruction: string): boolean {
+  const lowered = instruction.toLowerCase();
+  return /\b(app|dashboard|admin|login|signup|auth|ecommerce|cart|checkout|profile|api|backend|database|router|routing|spa)\b/.test(
+    lowered
+  );
+}
+
+function createScaffold(rootPath: string, type: ScaffoldType): string[] {
+  switch (type) {
+    case 'react-vite':
+      return createReactViteScaffold(rootPath);
+    case 'vue-vite':
+      return createVueViteScaffold(rootPath);
+    case 'svelte-vite':
+      return createSvelteViteScaffold(rootPath);
+    case 'nextjs':
+      return createNextScaffold(rootPath);
+    case 'nuxt':
+      return createNuxtScaffold(rootPath);
+    case 'astro':
+      return createAstroScaffold(rootPath);
+    case 'static':
+    default:
+      return createStaticScaffold(rootPath);
+  }
+}
+
+function getScaffoldCommands(type: ScaffoldType): string[] {
+  switch (type) {
+    case 'react-vite':
+      return [
+        'npm create vite@latest my-app -- --template react',
+        'cd my-app',
+        'npm install',
+        'npm run dev'
+      ];
+    case 'vue-vite':
+      return [
+        'npm create vite@latest my-app -- --template vue',
+        'cd my-app',
+        'npm install',
+        'npm run dev'
+      ];
+    case 'svelte-vite':
+      return [
+        'npm create vite@latest my-app -- --template svelte',
+        'cd my-app',
+        'npm install',
+        'npm run dev'
+      ];
+    case 'nextjs':
+      return [
+        'npx create-next-app@latest my-app',
+        'cd my-app',
+        'npm run dev'
+      ];
+    case 'nuxt':
+      return [
+        'npx nuxi@latest init my-app',
+        'cd my-app',
+        'npm install',
+        'npm run dev'
+      ];
+    case 'astro':
+      return [
+        'npm create astro@latest my-app',
+        'cd my-app',
+        'npm install',
+        'npm run dev'
+      ];
+    case 'static':
+    default:
+      return [
+        'Create index.html, styles.css, and main.js in the project root.',
+        'Open index.html in a browser or run: npx serve .'
+      ];
+  }
+}
+
+function createStaticScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'index.html',
+      content:
+        '<!doctype html>\n' +
+        '<html lang="en">\n' +
+        '<head>\n' +
+        '  <meta charset="UTF-8" />\n' +
+        '  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n' +
+        '  <title>New Website</title>\n' +
+        '  <link rel="stylesheet" href="styles.css" />\n' +
+        '</head>\n' +
+        '<body>\n' +
+        '  <div id="app">\n' +
+        '    <header>\n' +
+        '      <h1>Site Title</h1>\n' +
+        '    </header>\n' +
+        '    <main>\n' +
+        '      <section class="hero">\n' +
+        '        <h2>Hero headline</h2>\n' +
+        '        <p>Hero copy goes here.</p>\n' +
+        '      </section>\n' +
+        '    </main>\n' +
+        '    <footer>\n' +
+        '      <small>Footer text</small>\n' +
+        '    </footer>\n' +
+        '  </div>\n' +
+        '  <script src="main.js"></script>\n' +
+        '</body>\n' +
+        '</html>\n'
+    },
+    {
+      path: 'styles.css',
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '  color: #111;\n' +
+        '  background: #fff;\n' +
+        '}\n' +
+        '\n' +
+        '#app {\n' +
+        '  min-height: 100vh;\n' +
+        '  display: flex;\n' +
+        '  flex-direction: column;\n' +
+        '}\n' +
+        '\n' +
+        'main {\n' +
+        '  flex: 1;\n' +
+        '  padding: 40px 20px;\n' +
+        '}\n'
+    },
+    {
+      path: 'main.js',
+      content: "console.log('Site ready');\n"
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function detectProjectSubdir(filesList: string[]): string | null {
+  if (filesList.length === 0) {
+    return null;
+  }
+  const topLevel = new Set<string>();
+  let hasRootFiles = false;
+
+  for (const file of filesList) {
+    const normalized = file.replace(/\\/g, '/').replace(/^\.\/+/, '');
+    const parts = normalized.split('/');
+    if (parts.length === 1) {
+      hasRootFiles = true;
+      continue;
+    }
+    if (parts[0]) {
+      topLevel.add(parts[0]);
+    }
+    if (topLevel.size > 1) {
+      return null;
+    }
+  }
+
+  if (hasRootFiles || topLevel.size !== 1) {
+    return null;
+  }
+
+  return Array.from(topLevel)[0] ?? null;
+}
+
+function applyProjectSubdir(candidate: string, projectSubdir: string | null): string {
+  if (!projectSubdir) {
+    return candidate;
+  }
+  const normalized = candidate.replace(/\\/g, '/');
+  if (path.isAbsolute(candidate)) {
+    return candidate;
+  }
+  if (normalized.startsWith(`${projectSubdir}/`)) {
+    return candidate;
+  }
+  if (normalized.startsWith('./') || normalized.startsWith('../')) {
+    return candidate;
+  }
+  return path.join(projectSubdir, candidate);
+}
+
+function createReactViteScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'package.json',
+      content:
+        '{\n' +
+        '  "name": "forge-app",\n' +
+        '  "private": true,\n' +
+        '  "version": "0.0.0",\n' +
+        '  "type": "module",\n' +
+        '  "scripts": {\n' +
+        '    "dev": "vite",\n' +
+        '    "build": "vite build",\n' +
+        '    "preview": "vite preview"\n' +
+        '  },\n' +
+        '  "dependencies": {\n' +
+        '    "react": "^18.2.0",\n' +
+        '    "react-dom": "^18.2.0"\n' +
+        '  },\n' +
+        '  "devDependencies": {\n' +
+        '    "@vitejs/plugin-react": "^4.2.0",\n' +
+        '    "vite": "^5.0.0"\n' +
+        '  }\n' +
+        '}\n'
+    },
+    {
+      path: 'vite.config.js',
+      content:
+        "import { defineConfig } from 'vite';\n" +
+        "import react from '@vitejs/plugin-react';\n" +
+        '\n' +
+        'export default defineConfig({\n' +
+        '  plugins: [react()]\n' +
+        '});\n'
+    },
+    {
+      path: 'index.html',
+      content:
+        '<!doctype html>\n' +
+        '<html lang="en">\n' +
+        '  <head>\n' +
+        '    <meta charset="UTF-8" />\n' +
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n' +
+        '    <title>Forge App</title>\n' +
+        '  </head>\n' +
+        '  <body>\n' +
+        '    <div id="root"></div>\n' +
+        '    <script type="module" src="/src/main.jsx"></script>\n' +
+        '  </body>\n' +
+        '</html>\n'
+    },
+    {
+      path: path.join('src', 'main.jsx'),
+      content:
+        "import React from 'react';\n" +
+        "import ReactDOM from 'react-dom/client';\n" +
+        "import App from './App.jsx';\n" +
+        "import './index.css';\n" +
+        '\n' +
+        'ReactDOM.createRoot(document.getElementById(\'root\')).render(\n' +
+        '  <React.StrictMode>\n' +
+        '    <App />\n' +
+        '  </React.StrictMode>\n' +
+        ');\n'
+    },
+    {
+      path: path.join('src', 'App.jsx'),
+      content:
+        "import React from 'react';\n" +
+        "import './index.css';\n" +
+        '\n' +
+        'export default function App() {\n' +
+        '  return (\n' +
+        '    <div className="app">\n' +
+        '      <h1>Forge App</h1>\n' +
+        '      <p>Update this layout based on the request.</p>\n' +
+        '    </div>\n' +
+        '  );\n' +
+        '}\n'
+    },
+    {
+      path: path.join('src', 'index.css'),
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '  background: #fff;\n' +
+        '  color: #111;\n' +
+        '}\n' +
+        '\n' +
+        '.app {\n' +
+        '  padding: 40px 20px;\n' +
+        '}\n'
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function createVueViteScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'package.json',
+      content:
+        '{\n' +
+        '  "name": "forge-vue-app",\n' +
+        '  "private": true,\n' +
+        '  "version": "0.0.0",\n' +
+        '  "type": "module",\n' +
+        '  "scripts": {\n' +
+        '    "dev": "vite",\n' +
+        '    "build": "vite build",\n' +
+        '    "preview": "vite preview"\n' +
+        '  },\n' +
+        '  "dependencies": {\n' +
+        '    "vue": "^3.4.0"\n' +
+        '  },\n' +
+        '  "devDependencies": {\n' +
+        '    "@vitejs/plugin-vue": "^5.0.0",\n' +
+        '    "vite": "^5.0.0"\n' +
+        '  }\n' +
+        '}\n'
+    },
+    {
+      path: 'vite.config.js',
+      content:
+        "import { defineConfig } from 'vite';\n" +
+        "import vue from '@vitejs/plugin-vue';\n" +
+        '\n' +
+        'export default defineConfig({\n' +
+        '  plugins: [vue()]\n' +
+        '});\n'
+    },
+    {
+      path: 'index.html',
+      content:
+        '<!doctype html>\n' +
+        '<html lang="en">\n' +
+        '  <head>\n' +
+        '    <meta charset="UTF-8" />\n' +
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n' +
+        '    <title>Forge Vue App</title>\n' +
+        '  </head>\n' +
+        '  <body>\n' +
+        '    <div id="app"></div>\n' +
+        '    <script type="module" src="/src/main.js"></script>\n' +
+        '  </body>\n' +
+        '</html>\n'
+    },
+    {
+      path: path.join('src', 'main.js'),
+      content:
+        "import { createApp } from 'vue';\n" +
+        "import App from './App.vue';\n" +
+        "import './style.css';\n" +
+        '\n' +
+        'createApp(App).mount(\'#app\');\n'
+    },
+    {
+      path: path.join('src', 'App.vue'),
+      content:
+        '<template>\n' +
+        '  <div class="app">\n' +
+        '    <h1>Forge Vue App</h1>\n' +
+        '    <p>Update this layout based on the request.</p>\n' +
+        '  </div>\n' +
+        '</template>\n' +
+        '\n' +
+        '<script setup>\n' +
+        '</script>\n' +
+        '\n' +
+        '<style scoped>\n' +
+        '.app {\n' +
+        '  padding: 40px 20px;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '}\n' +
+        '</style>\n'
+    },
+    {
+      path: path.join('src', 'style.css'),
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '  background: #fff;\n' +
+        '  color: #111;\n' +
+        '}\n'
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function createSvelteViteScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'package.json',
+      content:
+        '{\n' +
+        '  "name": "forge-svelte-app",\n' +
+        '  "private": true,\n' +
+        '  "version": "0.0.0",\n' +
+        '  "type": "module",\n' +
+        '  "scripts": {\n' +
+        '    "dev": "vite",\n' +
+        '    "build": "vite build",\n' +
+        '    "preview": "vite preview"\n' +
+        '  },\n' +
+        '  "devDependencies": {\n' +
+        '    "@sveltejs/vite-plugin-svelte": "^3.0.0",\n' +
+        '    "svelte": "^4.0.0",\n' +
+        '    "vite": "^5.0.0"\n' +
+        '  }\n' +
+        '}\n'
+    },
+    {
+      path: 'vite.config.js',
+      content:
+        "import { defineConfig } from 'vite';\n" +
+        "import { svelte } from '@sveltejs/vite-plugin-svelte';\n" +
+        '\n' +
+        'export default defineConfig({\n' +
+        '  plugins: [svelte()]\n' +
+        '});\n'
+    },
+    {
+      path: 'index.html',
+      content:
+        '<!doctype html>\n' +
+        '<html lang="en">\n' +
+        '  <head>\n' +
+        '    <meta charset="UTF-8" />\n' +
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n' +
+        '    <title>Forge Svelte App</title>\n' +
+        '  </head>\n' +
+        '  <body>\n' +
+        '    <div id="app"></div>\n' +
+        '    <script type="module" src="/src/main.js"></script>\n' +
+        '  </body>\n' +
+        '</html>\n'
+    },
+    {
+      path: path.join('src', 'main.js'),
+      content:
+        "import App from './App.svelte';\n" +
+        "import './app.css';\n" +
+        '\n' +
+        'const app = new App({\n' +
+        '  target: document.getElementById(\'app\')\n' +
+        '});\n' +
+        '\n' +
+        'export default app;\n'
+    },
+    {
+      path: path.join('src', 'App.svelte'),
+      content:
+        '<main class="app">\n' +
+        '  <h1>Forge Svelte App</h1>\n' +
+        '  <p>Update this layout based on the request.</p>\n' +
+        '</main>\n' +
+        '\n' +
+        '<style>\n' +
+        '.app {\n' +
+        '  padding: 40px 20px;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '}\n' +
+        '</style>\n'
+    },
+    {
+      path: path.join('src', 'app.css'),
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '  background: #fff;\n' +
+        '  color: #111;\n' +
+        '}\n'
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function createNextScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'package.json',
+      content:
+        '{\n' +
+        '  "name": "forge-next-app",\n' +
+        '  "private": true,\n' +
+        '  "version": "0.0.0",\n' +
+        '  "scripts": {\n' +
+        '    "dev": "next dev",\n' +
+        '    "build": "next build",\n' +
+        '    "start": "next start"\n' +
+        '  },\n' +
+        '  "dependencies": {\n' +
+        '    "next": "^14.1.0",\n' +
+        '    "react": "^18.2.0",\n' +
+        '    "react-dom": "^18.2.0"\n' +
+        '  }\n' +
+        '}\n'
+    },
+    {
+      path: path.join('pages', '_app.jsx'),
+      content:
+        "import '../styles/globals.css';\n" +
+        '\n' +
+        'export default function App({ Component, pageProps }) {\n' +
+        '  return <Component {...pageProps} />;\n' +
+        '}\n'
+    },
+    {
+      path: path.join('pages', 'index.jsx'),
+      content:
+        'export default function Home() {\n' +
+        '  return (\n' +
+        '    <main style={{ padding: \'40px 20px\', fontFamily: \'Arial, sans-serif\' }}>\n' +
+        '      <h1>Forge Next.js App</h1>\n' +
+        '      <p>Update this layout based on the request.</p>\n' +
+        '    </main>\n' +
+        '  );\n' +
+        '}\n'
+    },
+    {
+      path: path.join('styles', 'globals.css'),
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  background: #fff;\n' +
+        '  color: #111;\n' +
+        '}\n'
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function createNuxtScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'package.json',
+      content:
+        '{\n' +
+        '  "name": "forge-nuxt-app",\n' +
+        '  "private": true,\n' +
+        '  "version": "0.0.0",\n' +
+        '  "type": "module",\n' +
+        '  "scripts": {\n' +
+        '    "dev": "nuxt dev",\n' +
+        '    "build": "nuxt build",\n' +
+        '    "preview": "nuxt preview"\n' +
+        '  },\n' +
+        '  "dependencies": {\n' +
+        '    "nuxt": "^3.10.0"\n' +
+        '  }\n' +
+        '}\n'
+    },
+    {
+      path: 'nuxt.config.ts',
+      content:
+        'export default defineNuxtConfig({\n' +
+        "  css: ['~/assets/main.css']\n" +
+        '});\n'
+    },
+    {
+      path: path.join('pages', 'index.vue'),
+      content:
+        '<template>\n' +
+        '  <main class="page">\n' +
+        '    <h1>Forge Nuxt App</h1>\n' +
+        '    <p>Update this layout based on the request.</p>\n' +
+        '  </main>\n' +
+        '</template>\n' +
+        '\n' +
+        '<style scoped>\n' +
+        '.page {\n' +
+        '  padding: 40px 20px;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '}\n' +
+        '</style>\n'
+    },
+    {
+      path: path.join('assets', 'main.css'),
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  background: #fff;\n' +
+        '  color: #111;\n' +
+        '}\n'
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function createAstroScaffold(rootPath: string): string[] {
+  const created: string[] = [];
+  const files = [
+    {
+      path: 'package.json',
+      content:
+        '{\n' +
+        '  "name": "forge-astro-site",\n' +
+        '  "private": true,\n' +
+        '  "version": "0.0.0",\n' +
+        '  "type": "module",\n' +
+        '  "scripts": {\n' +
+        '    "dev": "astro dev",\n' +
+        '    "build": "astro build",\n' +
+        '    "preview": "astro preview"\n' +
+        '  },\n' +
+        '  "dependencies": {\n' +
+        '    "astro": "^4.0.0"\n' +
+        '  }\n' +
+        '}\n'
+    },
+    {
+      path: 'astro.config.mjs',
+      content:
+        "import { defineConfig } from 'astro/config';\n" +
+        '\n' +
+        'export default defineConfig({});\n'
+    },
+    {
+      path: path.join('src', 'pages', 'index.astro'),
+      content:
+        '---\n' +
+        'const title = \'Forge Astro Site\';\n' +
+        '---\n' +
+        '<!doctype html>\n' +
+        '<html lang="en">\n' +
+        '  <head>\n' +
+        '    <meta charset="UTF-8" />\n' +
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n' +
+        '    <title>{title}</title>\n' +
+        '    <link rel="stylesheet" href="/src/styles/global.css" />\n' +
+        '  </head>\n' +
+        '  <body>\n' +
+        '    <main class="page">\n' +
+        '      <h1>{title}</h1>\n' +
+        '      <p>Update this layout based on the request.</p>\n' +
+        '    </main>\n' +
+        '  </body>\n' +
+        '</html>\n'
+    },
+    {
+      path: path.join('src', 'styles', 'global.css'),
+      content:
+        'body {\n' +
+        '  margin: 0;\n' +
+        '  font-family: Arial, sans-serif;\n' +
+        '  background: #fff;\n' +
+        '  color: #111;\n' +
+        '}\n' +
+        '\n' +
+        '.page {\n' +
+        '  padding: 40px 20px;\n' +
+        '}\n'
+    }
+  ];
+
+  files.forEach((file) => {
+    if (writeFileIfMissing(rootPath, file.path, file.content)) {
+      created.push(file.path);
+    }
+  });
+
+  return created;
+}
+
+function writeFileIfMissing(rootPath: string, relativePath: string, content: string): boolean {
+  const fullPath = path.join(rootPath, relativePath);
+  if (fs.existsSync(fullPath)) {
+    return false;
+  }
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, content, 'utf8');
+  return true;
 }
 
 type FixHints = {
@@ -746,9 +1599,11 @@ async function buildUpdatesFromUserSelection(
   panelApi?: ForgeUiApi,
   extraContext?: string,
   history?: ChatHistoryItem[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  projectSubdir?: string | null
 ): Promise<FileUpdate[] | null> {
   const resolved = selectedFiles
+    .map((candidate) => applyProjectSubdir(candidate, projectSubdir ?? null))
     .map((candidate) => resolveWorkspacePath(rootPath, candidate))
     .filter((item): item is { fullPath: string; relativePath: string } => item !== null);
 

@@ -248,6 +248,11 @@
           "default": true,
           "description": "Skip the file picker when the prompt is about creating new files (use automatic selection)."
         },
+        "forge.showScaffoldCommands": {
+          "type": "boolean",
+          "default": true,
+          "description": "When scaffolding a new project, show manual commands to recreate the scaffold."
+        },
         "forge.maxFilesPerUpdate": {
           "type": "number",
           "default": 6,

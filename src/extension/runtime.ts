@@ -29,13 +29,16 @@ import { generateHumanSummary } from '../forge/humanSummary';
 import { generatePlanSummary } from '../forge/planSummary';
 import { verifyChanges } from '../forge/verification';
 import type { ChatHistoryItem, FileUpdate } from '../forge/types';
+import type { ScaffoldType } from '../forge/updates';
 import {
   applyFileUpdates,
   attemptAutoFix,
+  decideScaffoldStack,
   requestMultiFileUpdate,
   requestSingleFileUpdate
 } from '../forge/updates';
 import { maybeRunValidation, runValidationFirstFix } from '../forge/validationFlow';
+import { listWorkspaceFiles } from '../forge/workspaceFiles';
 import {
   buildChangeSummaryText,
   formatClarificationFollowup,
@@ -264,6 +267,7 @@ export async function runForge(
     }
 
     let assumptionsUsed: string[] = [];
+    let scaffoldTypeOverride: ScaffoldType | null = null;
     const clarifyFirst = getForgeSetting<boolean>('clarifyBeforeEdit') !== false && intent !== 'fix';
     if (clarifyFirst && !skipClarifyCheck) {
       const clarification = await maybeClarifyInstruction(
@@ -381,6 +385,19 @@ export async function runForge(
       }
     }
 
+    if (enableMultiFile && intent === 'edit') {
+      const workspaceFiles = listWorkspaceFiles(rootPath, 3, 200);
+      const scaffoldDecision = decideScaffoldStack(instruction, workspaceFiles);
+      if (scaffoldDecision) {
+        scaffoldTypeOverride = scaffoldDecision.type;
+        recordStep(
+          'Scaffold decision',
+          `${scaffoldDecision.type} (${scaffoldDecision.source}): ${scaffoldDecision.reason}`
+        );
+        instruction += `\n\nSelected scaffold stack: ${scaffoldDecision.type}. Reason: ${scaffoldDecision.reason}`;
+      }
+    }
+
     const planSummary = await generatePlanSummary(
       instruction,
       rootPath,
@@ -463,7 +480,8 @@ export async function runForge(
         state.viewProviderInstance,
         history,
         combinedContext,
-        signal
+        signal,
+        scaffoldTypeOverride ?? undefined
       );
 
       if (!updatedFiles || updatedFiles.length === 0) {
