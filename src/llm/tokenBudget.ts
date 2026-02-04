@@ -10,6 +10,7 @@ export type BudgetResult = {
   estimatedTokens: number;
 };
 
+/** Trim chat messages to fit within an approximate token budget. */
 export function trimMessagesToTokenBudget(
   messages: ChatMessage[],
   maxTokens: number,
@@ -30,10 +31,12 @@ export function trimMessagesToTokenBudget(
   return { messages: combined, trimmed, estimatedTokens };
 }
 
+/** Estimate tokens for a full message list (rough heuristic). */
 export function estimateMessagesTokens(messages: ChatMessage[], ratio: number = DEFAULT_TOKEN_RATIO): number {
   return messages.reduce((total, msg) => total + estimateMessageTokens(msg, ratio), 0);
 }
 
+/** Estimate tokens for a single message (rough heuristic). */
 export function estimateMessageTokens(message: ChatMessage, ratio: number = DEFAULT_TOKEN_RATIO): number {
   return Math.ceil(message.content.length / ratio) + MESSAGE_OVERHEAD;
 }
@@ -106,6 +109,7 @@ function trimMessageContent(message: ChatMessage, availableTokens: number, ratio
   };
 }
 
+/** Parse a max context length from a server error body if present. */
 export function parseTokenLimitFromError(body: string): number | null {
   const match = body.match(/maximum context length is\s+(\d+)/i);
   if (match) {

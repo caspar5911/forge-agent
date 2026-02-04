@@ -16,6 +16,7 @@ type RankPayload = {
   ordered: string[];
 };
 
+/** Ask the LLM to rank candidate files by relevance to the instruction. */
 export async function rankFilesByRelevance(
   instruction: string,
   candidates: string[],

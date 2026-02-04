@@ -10,6 +10,7 @@ type ContextBundle = {
   files: string[];
 };
 
+/** Collect a small, ranked set of file snippets to ground an edit request. */
 export async function buildContextBundle(
   instruction: string,
   rootPath: string,

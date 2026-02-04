@@ -23,16 +23,19 @@ const SECRET_PATTERNS: Array<{ regex: RegExp; replacement: string }> = [
 
 let activeTrace: TraceEntry[] | null = null;
 
+/** Begin a new trace collection for the current run. */
 export function startTrace(): void {
   activeTrace = [];
 }
 
+/** Finish the active trace and return collected entries. */
 export function endTrace(): TraceEntry[] {
   const entries = activeTrace ?? [];
   activeTrace = null;
   return entries;
 }
 
+/** Record an arbitrary trace entry, applying redaction and truncation. */
 export function recordTrace(entry: TraceEntry): void {
   if (!activeTrace) {
     return;
@@ -46,14 +49,17 @@ export function recordTrace(entry: TraceEntry): void {
   activeTrace.push({ ...entry, content, sensitive });
 }
 
+/** Record a high-level step entry (short status text). */
 export function recordStep(title: string, content: string): void {
   recordTrace({ kind: 'step', title, content });
 }
 
+/** Record raw payloads (JSON, diffs, logs) for the peek panel. */
 export function recordPayload(title: string, content: string): void {
   recordTrace({ kind: 'payload', title, content });
 }
 
+/** Record the prompt messages with optional system prompt hiding. */
 export function recordPrompt(title: string, messages: ChatMessage[], hideSystem: boolean = true): void {
   const lines: string[] = [];
   let systemHidden = false;
@@ -76,6 +82,7 @@ export function recordPrompt(title: string, messages: ChatMessage[], hideSystem:
   });
 }
 
+/** Record the model response body. */
 export function recordResponse(title: string, content: string): void {
   recordTrace({ kind: 'response', title, content });
 }

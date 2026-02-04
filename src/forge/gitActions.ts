@@ -663,6 +663,7 @@ function buildGitIntentMessages(instruction: string): ChatMessage[] {
   ];
 }
 
+/** Detect git actions requested by the prompt (explicit or smart mode). */
 export async function maybeDetectGitActions(
   instruction: string,
   output: vscode.OutputChannel

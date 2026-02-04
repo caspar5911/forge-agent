@@ -15,6 +15,7 @@ export type StructuredRequestOptions = {
   maxRetries?: number;
 };
 
+/** Request a schema-constrained JSON response with retries and repair fallback. */
 export async function requestStructuredJson<T>(
   messages: ChatMessage[],
   schema: JsonSchema,

@@ -11,6 +11,7 @@ export type VerificationResult = {
   confidence?: 'low' | 'medium' | 'high';
 };
 
+/** Ask the verifier model to confirm requirements were met given summary + diff. */
 export async function verifyChanges(
   instruction: string,
   changeSummary: string,

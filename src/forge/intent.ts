@@ -247,6 +247,7 @@ type ClarificationSuggestion = {
   plan: string[];
 };
 
+/** Generate best-guess answers and a draft plan for clarification prompts. */
 export async function maybeSuggestClarificationAnswers(
   instruction: string,
   questions: string[],

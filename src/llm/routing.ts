@@ -3,6 +3,7 @@ import type { LLMConfig } from './config';
 
 export type RoutedModelKind = 'plan' | 'verify' | 'summary';
 
+/** Resolve a model override for a specific LLM role (plan/verify/summary). */
 export function getRoutedConfig(kind: RoutedModelKind): LLMConfig {
   const envKey =
     kind === 'plan'

@@ -6,6 +6,7 @@ import { mergeChatHistory } from './intent';
 import { recordPrompt, recordResponse } from './trace';
 import type { ChatHistoryItem } from './types';
 
+/** Produce a concise, user-facing summary after edits. */
 export async function generateHumanSummary(
   instruction: string,
   changeSummary: string,

@@ -5,7 +5,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 **Status**
 - Phase 0-6 complete (UI + workflows + Git Manager)
 - Phase 7: UX polish + hardening (deferred)
-- Phase 8: capability upgrades (in progress; Q&A citations, JSON retries, chunked updates, clarification proposals, Git intent detection shipped)
+- Phase 8: capability upgrades (in progress)
 
 **Why Forge**
 - On-prem and offline-friendly
@@ -13,14 +13,16 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Validation + auto-fix loops
 - Local OpenAI-compatible LLM support (vLLM tested)
 
-**Architecture**
-- `src/extension.ts`: command wiring, UI registration, lifecycle hooks
-- `src/extension/runtime.ts`: run orchestration and state management
-- `src/extension/lifecycle.ts`: settings sync + keep-alive
-- `src/forge/`: intent detection, file selection, updates, validation, Git actions
-- `src/ui/`: webview UI, panel, sidebar view
-- `src/llm/`: OpenAI-compatible HTTP client
-- `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: context, symbol index, validation, Git helpers
+**Core Flow**
+- Understand intent (edit, question, fix) with LLM + rules
+- Explicit file edits override fix intent when a prompt names files
+- Clarify missing requirements (optional)
+- Plan summary (short, user-visible)
+- Tool-aware preflight (read/diff/validate) for grounding
+- Edit single or multiple files with strict JSON output
+- Validate and auto-fix if requested
+- Verify changes against requirements
+- Produce a human summary
 
 **Capabilities**
 - Single-file or multi-file edits with explicit selection
@@ -44,6 +46,8 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Tool-aware preflight (read file / diff / validation to ground edits)
 - Evaluation harness with regression snapshots (`eval/results/`)
 - Inline "Peek" panel showing steps, prompts, raw JSON payloads, diffs, and validation output (system prompts hidden; secrets redacted)
+- Basename disambiguation (prefers `src/` when duplicates exist)
+- Assumptions are surfaced for confirmation after edits
 
 **Limits**
 - No hidden Git actions
@@ -55,28 +59,16 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Some backends may not support schema-constrained decoding; Forge falls back to repair + retry
 - Planning/verification adds extra LLM calls (slower but more reliable)
 - Token trimming can drop older context when requests exceed the model limit
+- Validation-first fix mode continues with edits if the prompt explicitly requests changes
 
-## Capability Tiers (1-4)
-
-**Tier 1 — Must-have**
-- Token budget enforcement (auto-trim before send)
-- Strong retrieval + re-ranking (semantic search)
-- Agent loop with verification + retries
-
-**Tier 2 — Big multipliers**
-- Evaluation suite + regression tracking
-- Tool-aware planning (choose tools, not just edit)
-- Model routing (plan/verify/summary on different models)
-
-**Tier 3 — Advanced**
-- Persistent repo memory summary + change log
-- Multi-source retrieval (symbols + embeddings + tests)
-- Cross-file impact analysis (tests touched, build impact)
-
-**Tier 4 — Stretch**
-- Multi-agent orchestration (planner + implementer + reviewer)
-- Continuous eval gating before applying changes
-- Adaptive tool selection policies per repo
+**Architecture**
+- `src/extension.ts`: command wiring, UI registration, lifecycle hooks
+- `src/extension/runtime.ts`: run orchestration and state management
+- `src/extension/lifecycle.ts`: settings sync + keep-alive
+- `src/forge/`: intent detection, file selection, updates, validation, Git actions
+- `src/ui/`: webview UI, panel, sidebar view
+- `src/llm/`: OpenAI-compatible HTTP client, structured JSON, token budget
+- `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: context, symbol index, validation, Git helpers
 
 ## Quickstart (Local Setup)
 
@@ -84,7 +76,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Node.js 18+
 - VS Code
 - Docker Desktop (WSL2 engine enabled)
-- NVIDIA drivers with WSL2 GPU support (32 GB VRAM recommended for 32B models)
+- NVIDIA drivers with WSL2 GPU support
 
 **2) Install**
 ```bash
@@ -125,38 +117,6 @@ Invoke-RestMethod http://127.0.0.1:8000/v1/models
 **4) Configure Forge (VS Code Settings)**
 Open Settings and search for `Forge`, or edit `settings.json`.
 
-Key settings:
-- `forge.profile` (`auto` | `balanced` | `manual`)
-- `forge.llmEndpoint` (default: `http://127.0.0.1:8000/v1`)
-- `forge.llmModel` (default: `Qwen/Qwen2.5-Coder-32B-Instruct-AWQ`)
-- `forge.enableMultiFile`
-
-**Profiles**
-- `auto`: fastest flow, minimal prompts, auto-accepts clarification proposals, still confirms Git actions
-- `balanced`: safer defaults with confirmations and clarification checks
-- `manual`: ask before most actions
-
-**Advanced settings (selected)**
-- `forge.skipCreateFilePicker`: skip the file picker when creating new files
-- `forge.maxFilesPerUpdate` / `forge.maxUpdateChars`: chunking limits for multi-file updates
-- `forge.clarifySuggestAnswers` / `forge.clarifyConfirmSuggestions`: control clarification proposals
-- `forge.gitIntentMode` / `forge.gitConfirmActions`: Git intent detection + confirmation
-- `forge.qaMinSources` / `forge.qaMaxFiles`: Q&A grounding thresholds
-- `forge.bestEffortFix`: enable guessy auto-fix (deps + missing files)
-- `forge.autoAddDependencies` / `forge.autoCreateMissingFiles` / `forge.autoInstallDependencies`: best-effort fix behavior
-
-Optional model routing (env vars):
-- `FORGE_LLM_MODEL_PLAN` (plan summaries)
-- `FORGE_LLM_MODEL_VERIFY` (verification pass)
-- `FORGE_LLM_MODEL_SUMMARY` (human summary)
-
-Environment variables:
-- `FORGE_LLM_ENDPOINT`
-- `FORGE_LLM_MODEL`
-- `FORGE_LLM_API_KEY`
-- `FORGE_LLM_TIMEOUT_MS`
-- `FORGE_LLM_MAX_INPUT_TOKENS` (auto-trim input before send)
-
 Example settings (minimal):
 ```json
 {
@@ -167,29 +127,22 @@ Example settings (minimal):
 }
 ```
 
-Advanced settings are still available if you need fine-grained control.
-
-**5) Build & Run (Dev)**
-```bash
-npm run compile
-```
-
-- Press `F5` to open the Extension Development Host.
-- Run `Forge: UI` or click the Forge Activity Bar icon.
+**Profiles**
+- `auto`: fastest flow, minimal prompts, auto-accepts clarification proposals, still confirms Git actions
+- `balanced`: safer defaults with confirmations and clarification checks
+- `manual`: ask before most actions
 
 ## LLM Backends
 
 **Ollama (local, OpenAI-compatible API)**
-
 Ollama exposes an OpenAI-compatible API at `http://localhost:11434/v1` and expects a local model name that you have pulled.
 
-1. Pull a model:
+Pull a model:
 ```bash
 ollama pull gpt-oss:20b
 ```
 
-
-2. Point Forge at Ollama:
+Point Forge at Ollama:
 ```json
 {
   "forge.llmEndpoint": "http://127.0.0.1:11434/v1",
@@ -200,7 +153,6 @@ ollama pull gpt-oss:20b
 The `api_key` is required by the OpenAI-compatible client but is ignored by Ollama.
 
 **OpenAI API (hosted)**
-
 OpenAI's API uses Bearer authentication and the base endpoint `https://api.openai.com/v1`.
 
 ```json
@@ -272,18 +224,81 @@ npm run eval
 ```
 The latest run is stored in `eval/results/latest.json`.
 
-## Model Compatibility
-Tested:
-- Qwen/Qwen2.5-Coder-32B-Instruct-AWQ (vLLM)
+## Settings Reference
 
-Expected:
-- OpenAI-compatible chat API
-- JSON-safe outputs for update payloads
+**Core LLM**
+- `forge.llmEndpoint`: Base URL for the local LLM server (OpenAI-compatible)
+- `forge.llmModel`: Model name to send in chat completion requests
+- `forge.llmApiKey`: Optional API key for the local LLM server
+- `forge.llmTimeoutMs`: Timeout in milliseconds for LLM requests
+- `forge.profile`: Behavior profile (`auto`, `balanced`, `manual`)
 
-## Security and Privacy
-- Runs fully on-prem
-- No telemetry by default
-- API keys stored in VS Code settings or environment variables
+**Editing and Confirmation**
+- `forge.enableMultiFile`: Allow the LLM to edit multiple files in one run
+- `forge.skipTargetConfirmation`: Skip the confirmation prompt before editing the active file
+- `forge.skipConfirmations`: Automatically accept confirmation prompts
+- `forge.showDiffPreview`: Show a diff preview tab before applying changes
+- `forge.skipCreateFilePicker`: Skip the file picker when creating new files
+- `forge.maxFilesPerUpdate`: Maximum files per update request
+- `forge.maxUpdateChars`: Maximum approximate characters per update request
+
+**Validation and Auto-fix**
+- `forge.autoValidation`: Automatically select and run the best validation command
+- `forge.autoFixValidation`: Attempt auto-fix on validation failures
+- `forge.autoFixMaxRetries`: Maximum auto-fix attempts
+- `forge.bestEffortFix`: Allow best-effort fixes (deps + missing files)
+- `forge.autoAddDependencies`: Auto-add missing dependencies to package.json
+- `forge.autoCreateMissingFiles`: Auto-create missing files for relative imports
+- `forge.autoInstallDependencies`: Run install when package.json changes
+
+**Clarification**
+- `forge.clarifyBeforeEdit`: Ask clarifying questions for ambiguous prompts
+- `forge.clarifySuggestAnswers`: Propose best-guess answers
+- `forge.clarifyConfirmSuggestions`: Require user confirmation of proposed answers
+- `forge.clarifyMaxQuestions`: Maximum clarification questions per round
+- `forge.clarifyMaxRounds`: Maximum clarification rounds
+- `forge.clarifyOnlyIf`: Block only when very unclear (`always` or `very-unclear`)
+- `forge.clarifyAutoAssume`: Proceed with safe defaults after clarification limit
+
+**Q&A**
+- `forge.qaMinSources`: Minimum sources required for answers
+- `forge.qaMaxFiles`: Maximum files to scan for Q&A
+- `forge.qaMaxSnippets`: Maximum snippets to include in Q&A prompts
+- `forge.qaSnippetLines`: Context lines above/below a hit
+- `forge.qaMaxFileBytes`: Maximum file size to read for Q&A
+
+**Git**
+- `forge.enableGitWorkflow`: Enable the Git workflow after changes
+- `forge.gitStageMode`: Stage all files or select files
+- `forge.gitAutoMessage`: Generate a commit message
+- `forge.gitMessageStyle`: Commit style (`conventional` or `plain`)
+- `forge.gitAutoPush`: Allow automatic push when confirmations are skipped
+- `forge.gitIntentMode`: Git intent detection (`disabled`, `explicit`, `smart`)
+- `forge.gitConfirmActions`: Confirm before running Git actions
+
+**Context and History**
+- `forge.projectSummaryMaxChars`: Maximum chars for project summary
+- `forge.projectSummaryMaxFiles`: Maximum files for project summary
+- `forge.projectSummaryMaxFileBytes`: Maximum size of a summary file
+- `forge.projectSummaryChunkChars`: Max chars per summary chunk
+- `forge.projectSummaryMaxChunks`: Maximum summary chunks
+- `forge.chatHistoryMaxMessages`: Max chat messages to include
+- `forge.chatHistoryMaxChars`: Max total chars of chat history
+
+**Flags and Logging**
+- `forge.intentUseLLM`: Use LLM to classify prompt intent
+- `forge.verboseLogs`: Enable verbose diagnostic logs
+- `forge.keepAliveSeconds`: Ping LLM every N seconds to keep it warm
+
+## Environment Variables
+- `FORGE_LLM_ENDPOINT`
+- `FORGE_LLM_MODEL`
+- `FORGE_LLM_API_KEY`
+- `FORGE_LLM_TIMEOUT_MS`
+- `FORGE_LLM_MAX_INPUT_TOKENS` (auto-trim input before send)
+- `FORGE_LLM_MODEL_PLAN`
+- `FORGE_LLM_MODEL_VERIFY`
+- `FORGE_LLM_MODEL_SUMMARY`
 
 ## Known Issues / Limitations
 - JSON payloads can still fail on very large outputs, even with retries
@@ -340,6 +355,11 @@ Phase 8 - Capability upgrades (in progress)
 - Smarter file targeting confidence thresholds
 - Clarification proposals with user verification
 - Git intent detection improvements
+
+## Security and Privacy
+- Runs fully on-prem
+- No telemetry by default
+- API keys stored in VS Code settings or environment variables
 
 ## Release Notes
 v0.1

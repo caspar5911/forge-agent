@@ -54,6 +54,7 @@ const PROFILE_DEFAULTS: Record<ForgeProfile, ProfileDefaults> = {
   }
 };
 
+/** Resolve the active Forge profile, falling back to balanced. */
 export function getForgeProfile(config?: vscode.WorkspaceConfiguration): ForgeProfile {
   const cfg = config ?? vscode.workspace.getConfiguration('forge');
   const value = cfg.get<string>('profile') ?? 'balanced';

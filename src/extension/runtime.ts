@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { logActionPurpose } from '../forge/actionPurpose';
 import { buildInlineDiffPreview, getLineChangeSummary } from '../forge/diff';
-import { harvestContext } from '../context';
 import {
   maybeDetectGitActions,
   maybeRunGitWorkflow,
@@ -29,9 +28,6 @@ import { buildContextBundle } from '../forge/contextBundle';
 import { generateHumanSummary } from '../forge/humanSummary';
 import { generatePlanSummary } from '../forge/planSummary';
 import { verifyChanges } from '../forge/verification';
-import { compressTask } from '../compressor/index';
-import { nextToolCall } from '../planner/index';
-import { getRoutedConfig } from '../llm/routing';
 import type { ChatHistoryItem, FileUpdate } from '../forge/types';
 import {
   applyFileUpdates,
@@ -40,8 +36,13 @@ import {
   requestSingleFileUpdate
 } from '../forge/updates';
 import { maybeRunValidation, runValidationFirstFix } from '../forge/validationFlow';
-import { runCommand } from '../validation';
-import { getDiff, isGitRepo } from '../git';
+import {
+  buildChangeSummaryText,
+  formatClarificationFollowup,
+  formatClarificationProposal,
+  parseClarificationDecision,
+  runToolAwarePreflight
+} from './runtimeHelpers';
 import type { ForgeUiApi } from '../ui/api';
 import type { ForgePanel } from '../ui/panel';
 import type { ForgeViewProvider } from '../ui/view';
@@ -775,162 +776,4 @@ export function cancelActiveRun(
     panelApi.setStatus('Stopped');
     logOutput(output, panelApi, 'Run stopped.');
   }
-}
-
-function formatClarificationFollowup(
-  originalInstruction: string,
-  questions: string[],
-  answers: string
-): string {
-  const cleanedAnswers = answers
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && line.toLowerCase() !== 'copy')
-    .join('\n');
-  const trimmedAnswers = cleanedAnswers.trim();
-  const questionBlock = questions.map((item) => `- ${item}`).join('\n');
-  return (
-    `${originalInstruction}\n\nClarification questions:\n${questionBlock}\n\n` +
-    `Clarification answers:\n${trimmedAnswers.length > 0 ? trimmedAnswers : '(no answer provided)'}`
-  );
-}
-
-function formatClarificationProposal(
-  originalInstruction: string,
-  questions: string[],
-  proposedAnswers: string[],
-  proposedPlan: string[]
-): string {
-  const questionBlock = questions.map((item) => `- ${item}`).join('\n');
-  const answerBlock = proposedAnswers.length > 0
-    ? proposedAnswers.map((item) => `- ${item}`).join('\n')
-    : '- (no proposed answers)';
-  const planBlock = proposedPlan.length > 0
-    ? proposedPlan.map((item) => `- ${item}`).join('\n')
-    : '- (no plan)';
-  return (
-    `${originalInstruction}\n\nClarification questions:\n${questionBlock}\n\n` +
-    `Proposed answers:\n${answerBlock}\n\nProposed plan:\n${planBlock}`
-  );
-}
-
-function parseClarificationDecision(input: string): 'accept' | 'reject' | 'answer' {
-  const trimmed = input.trim().toLowerCase();
-  if (trimmed.length === 0) {
-    return 'answer';
-  }
-  if (/^(accept|yes|y|ok|okay|proceed|continue|run)$/.test(trimmed)) {
-    return 'accept';
-  }
-  if (/^(reject|no|n|cancel|stop)$/.test(trimmed)) {
-    return 'reject';
-  }
-  return 'answer';
-}
-
-function buildChangeSummaryText(
-  updates: FileUpdate[],
-  summaries: string[]
-): { text: string; lines: string[] } {
-  const lines = summaries.filter((line) => line && line.trim().length > 0);
-  if (lines.length === 0) {
-    updates.forEach((update) => {
-      lines.push(`- ${update.relativePath}`);
-    });
-  }
-  return { text: lines.join('\n'), lines };
-}
-
-async function runToolAwarePreflight(
-  instruction: string,
-  rootPath: string,
-  activeFilePath: string | null,
-  output: vscode.OutputChannel,
-  panelApi: ForgeUiApi | undefined,
-  signal?: AbortSignal
-): Promise<string | null> {
-  const projectContext = harvestContext();
-  const plannerContext = {
-    workspaceRoot: rootPath,
-    activeEditorFile: activeFilePath ?? projectContext.activeEditorFile,
-    files: projectContext.files,
-    packageJson: projectContext.packageJson,
-    packageManager: projectContext.packageManager,
-    frontendFramework: projectContext.frontendFramework,
-    backendFramework: projectContext.backendFramework
-  };
-
-  const plan = await compressTask(instruction, plannerContext, getRoutedConfig('plan'));
-  recordStep('Tool-aware plan', plan.kind === 'plan' ? plan.steps.join('\n') : plan.questions.join('\n'));
-  const toolCall = await nextToolCall({ plan, context: plannerContext }, getRoutedConfig('plan'));
-  recordStep('Tool-aware tool', JSON.stringify(toolCall));
-
-  if (signal?.aborted) {
-    return null;
-  }
-
-  if (toolCall.tool === 'read_file') {
-    const resolved = resolveToolPath(rootPath, toolCall.path);
-    if (!resolved) {
-      return null;
-    }
-    try {
-      const content = fs.readFileSync(resolved.fullPath, 'utf8');
-      const trimmed = truncateText(content, 3000);
-      return `Tool: read_file\nFile: ${resolved.relativePath}\n${trimmed}`;
-    } catch (error) {
-      logOutput(output, panelApi, `Tool read error: ${String(error)}`);
-      return null;
-    }
-  }
-
-  if (toolCall.tool === 'request_diff') {
-    try {
-      const hasGit = await isGitRepo(rootPath);
-      if (!hasGit) {
-        return null;
-      }
-      const diff = await getDiff(rootPath, { full: false });
-      return diff.trim().length > 0 ? `Tool: request_diff\n${truncateText(diff, 3000)}` : null;
-    } catch (error) {
-      logOutput(output, panelApi, `Tool diff error: ${String(error)}`);
-      return null;
-    }
-  }
-
-  if (toolCall.tool === 'run_validation_command') {
-    const command = toolCall.command?.trim();
-    if (!command) {
-      return null;
-    }
-    try {
-      const result = await runCommand(command, rootPath, output);
-      return `Tool: run_validation_command\nCommand: ${command}\nExit: ${result.code}\n${truncateText(result.output, 3000)}`;
-    } catch (error) {
-      logOutput(output, panelApi, `Tool validation error: ${String(error)}`);
-      return null;
-    }
-  }
-
-  return null;
-}
-
-function resolveToolPath(
-  rootPath: string,
-  candidate: string
-): { fullPath: string; relativePath: string } | null {
-  const normalized = path.normalize(candidate.replace(/\//g, path.sep));
-  const fullPath = path.isAbsolute(normalized) ? normalized : path.join(rootPath, normalized);
-  const relativePath = path.relative(rootPath, fullPath);
-  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-    return null;
-  }
-  return { fullPath, relativePath };
-}
-
-function truncateText(text: string, maxChars: number): string {
-  if (text.length <= maxChars) {
-    return text;
-  }
-  return `${text.slice(0, maxChars)}\n... (truncated)`;
 }

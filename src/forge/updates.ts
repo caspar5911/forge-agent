@@ -129,33 +129,23 @@ export async function requestMultiFileUpdate(
     return null;
   }
 
-  const suggestedFiles = suggestFilesForInstruction(
-    instruction,
-    filesList,
-    getWorkspaceIndex()
-  );
+  const suggestedFiles = suggestFilesForInstruction(instruction, filesList, getWorkspaceIndex());
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
   const mentionedFiles = extractMentionedFiles(instruction, filesList);
   const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths, ...hintFiles]));
-  const disambiguatedDirect = disambiguateCandidatePaths(directFiles, filesList);
-  if (disambiguatedDirect.notes.length > 0) {
-    recordStep('Basename disambiguation', disambiguatedDirect.notes.join('\n'));
-  }
-  const isSmallEdit = isSmallEditInstruction(instruction);
-  const autoSelectedFiles =
-    disambiguatedDirect.paths.length > 0
-      ? disambiguatedDirect.paths
-      : isSmallEdit && suggestedFiles.length === 1
-        ? suggestedFiles
-        : [];
-  const shouldSkipPicker = allowNewFiles && skipCreateFilePicker;
-  const shouldOfferPicker =
-    !shouldSkipPicker && autoSelectedFiles.length === 0 && suggestedFiles.length > 1;
+  const autoSelection = computeAutoSelection({
+    directFiles,
+    filesList,
+    suggestedFiles,
+    allowNewFiles,
+    skipCreateFilePicker,
+    instruction
+  });
 
-  if (autoSelectedFiles.length > 0) {
-    recordStep('File selection (auto)', autoSelectedFiles.join('\n'));
+  if (autoSelection.autoSelectedFiles.length > 0) {
+    recordStep('File selection (auto)', autoSelection.autoSelectedFiles.join('\n'));
     return buildUpdatesFromUserSelection(
-      autoSelectedFiles,
+      autoSelection.autoSelectedFiles,
       rootPath,
       instruction,
       activeRelativePath,
@@ -167,7 +157,7 @@ export async function requestMultiFileUpdate(
     );
   }
 
-  if (shouldOfferPicker) {
+  if (autoSelection.shouldOfferPicker) {
     const userSelection = await requestUserFileSelection(filesList, preselected, panel, viewProvider);
     if (userSelection) {
       if (userSelection.cancelled) {
@@ -237,25 +227,17 @@ export async function requestMultiFileUpdate(
     return null;
   }
 
-  const uniquePaths = Array.from(
-    new Set([...selectedFiles.map((item) => String(item)), ...mentionedFiles, ...explicitPaths])
-  );
+  const candidatePaths = await resolveSelectionCandidates({
+    selectedFiles,
+    mentionedFiles,
+    explicitPaths,
+    filesList,
+    rootPath,
+    activeRelativePath,
+    instruction
+  });
 
-  if (uniquePaths.length === 0) {
-    const keywordMatches = await findFilesByKeywords(instruction, rootPath, filesList);
-    uniquePaths.push(...keywordMatches);
-  }
-
-  const disambiguated = disambiguateCandidatePaths(uniquePaths, filesList);
-  if (disambiguated.notes.length > 0) {
-    recordStep('Basename disambiguation', disambiguated.notes.join('\n'));
-  }
-
-  if (disambiguated.paths.length === 0 && activeRelativePath) {
-    disambiguated.paths.push(activeRelativePath);
-  }
-
-  const resolved = disambiguated.paths
+  const resolved = candidatePaths
     .map((candidate) => resolveWorkspacePath(rootPath, candidate))
     .filter((item): item is { fullPath: string; relativePath: string } => item !== null);
 
@@ -691,6 +673,30 @@ type DisambiguationResult = {
   notes: string[];
 };
 
+type AutoSelectionInput = {
+  directFiles: string[];
+  filesList: string[];
+  suggestedFiles: string[];
+  allowNewFiles: boolean;
+  skipCreateFilePicker: boolean;
+  instruction: string;
+};
+
+type AutoSelectionResult = {
+  autoSelectedFiles: string[];
+  shouldOfferPicker: boolean;
+};
+
+type SelectionCandidateInput = {
+  selectedFiles: string[];
+  mentionedFiles: string[];
+  explicitPaths: string[];
+  filesList: string[];
+  rootPath: string;
+  activeRelativePath: string | null;
+  instruction: string;
+};
+
 /** Prefer a stable path when multiple files share the same basename. */
 function disambiguateCandidatePaths(candidates: string[], filesList: string[]): DisambiguationResult {
   const normalizedFiles = filesList.map((file) => file.replace(/\\/g, '/'));
@@ -732,6 +738,54 @@ function pickPreferredMatch(matches: string[]): string {
     return preferApp;
   }
   return matches.slice().sort((a, b) => a.length - b.length)[0];
+}
+
+/** Decide whether to auto-select files or show the picker. */
+function computeAutoSelection(input: AutoSelectionInput): AutoSelectionResult {
+  const disambiguatedDirect = disambiguateCandidatePaths(input.directFiles, input.filesList);
+  if (disambiguatedDirect.notes.length > 0) {
+    recordStep('Basename disambiguation', disambiguatedDirect.notes.join('\n'));
+  }
+
+  const isSmallEdit = isSmallEditInstruction(input.instruction);
+  const autoSelectedFiles =
+    disambiguatedDirect.paths.length > 0
+      ? disambiguatedDirect.paths
+      : isSmallEdit && input.suggestedFiles.length === 1
+        ? input.suggestedFiles
+        : [];
+
+  const shouldSkipPicker = input.allowNewFiles && input.skipCreateFilePicker;
+  const shouldOfferPicker =
+    !shouldSkipPicker && autoSelectedFiles.length === 0 && input.suggestedFiles.length > 1;
+
+  return { autoSelectedFiles, shouldOfferPicker };
+}
+
+/** Merge selection sources, disambiguate, and apply fallback paths. */
+async function resolveSelectionCandidates(input: SelectionCandidateInput): Promise<string[]> {
+  const candidateSet = new Set<string>([
+    ...input.selectedFiles.map((item) => String(item)),
+    ...input.mentionedFiles,
+    ...input.explicitPaths
+  ]);
+  const candidates = Array.from(candidateSet);
+
+  if (candidates.length === 0) {
+    const keywordMatches = await findFilesByKeywords(input.instruction, input.rootPath, input.filesList);
+    keywordMatches.forEach((match) => candidateSet.add(match));
+  }
+
+  const disambiguated = disambiguateCandidatePaths(Array.from(candidateSet), input.filesList);
+  if (disambiguated.notes.length > 0) {
+    recordStep('Basename disambiguation', disambiguated.notes.join('\n'));
+  }
+
+  if (disambiguated.paths.length === 0 && input.activeRelativePath) {
+    disambiguated.paths.push(input.activeRelativePath);
+  }
+
+  return disambiguated.paths;
 }
 
 /** Build the prompt for selecting files relevant to the instruction. */
