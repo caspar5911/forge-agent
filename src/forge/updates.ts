@@ -137,10 +137,14 @@ export async function requestMultiFileUpdate(
   const preselected = lastManualSelection.length > 0 ? lastManualSelection : suggestedFiles;
   const mentionedFiles = extractMentionedFiles(instruction, filesList);
   const directFiles = Array.from(new Set([...mentionedFiles, ...explicitPaths, ...hintFiles]));
+  const disambiguatedDirect = disambiguateCandidatePaths(directFiles, filesList);
+  if (disambiguatedDirect.notes.length > 0) {
+    recordStep('Basename disambiguation', disambiguatedDirect.notes.join('\n'));
+  }
   const isSmallEdit = isSmallEditInstruction(instruction);
   const autoSelectedFiles =
-    directFiles.length > 0
-      ? directFiles
+    disambiguatedDirect.paths.length > 0
+      ? disambiguatedDirect.paths
       : isSmallEdit && suggestedFiles.length === 1
         ? suggestedFiles
         : [];
@@ -242,11 +246,16 @@ export async function requestMultiFileUpdate(
     uniquePaths.push(...keywordMatches);
   }
 
-  if (uniquePaths.length === 0 && activeRelativePath) {
-    uniquePaths.push(activeRelativePath);
+  const disambiguated = disambiguateCandidatePaths(uniquePaths, filesList);
+  if (disambiguated.notes.length > 0) {
+    recordStep('Basename disambiguation', disambiguated.notes.join('\n'));
   }
 
-  const resolved = uniquePaths
+  if (disambiguated.paths.length === 0 && activeRelativePath) {
+    disambiguated.paths.push(activeRelativePath);
+  }
+
+  const resolved = disambiguated.paths
     .map((candidate) => resolveWorkspacePath(rootPath, candidate))
     .filter((item): item is { fullPath: string; relativePath: string } => item !== null);
 
@@ -675,6 +684,54 @@ function hasBlockedPathSegment(value: string): boolean {
     '.cache'
   ]);
   return parts.some((part) => blocked.has(part));
+}
+
+type DisambiguationResult = {
+  paths: string[];
+  notes: string[];
+};
+
+/** Prefer a stable path when multiple files share the same basename. */
+function disambiguateCandidatePaths(candidates: string[], filesList: string[]): DisambiguationResult {
+  const normalizedFiles = filesList.map((file) => file.replace(/\\/g, '/'));
+  const notes: string[] = [];
+  const resolved: string[] = [];
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = candidate.replace(/\\/g, '/');
+    if (normalizedCandidate.includes('/')) {
+      resolved.push(normalizedCandidate);
+      continue;
+    }
+    const base = normalizedCandidate.toLowerCase();
+    const matches = normalizedFiles.filter(
+      (file) => path.posix.basename(file).toLowerCase() === base
+    );
+    if (matches.length === 0) {
+      resolved.push(normalizedCandidate);
+      continue;
+    }
+    const preferred = pickPreferredMatch(matches);
+    if (preferred && preferred !== normalizedCandidate) {
+      notes.push(`${normalizedCandidate} -> ${preferred}`);
+    }
+    resolved.push(preferred ?? normalizedCandidate);
+  }
+
+  const unique = Array.from(new Set(resolved));
+  return { paths: unique, notes };
+}
+
+function pickPreferredMatch(matches: string[]): string {
+  const preferSrc = matches.find((file) => file.startsWith('src/') || file.includes('/src/'));
+  if (preferSrc) {
+    return preferSrc;
+  }
+  const preferApp = matches.find((file) => file.startsWith('app/') || file.includes('/app/'));
+  if (preferApp) {
+    return preferApp;
+  }
+  return matches.slice().sort((a, b) => a.length - b.length)[0];
 }
 
 /** Build the prompt for selecting files relevant to the instruction. */

@@ -15,9 +15,11 @@ import {
   clearPendingDisambiguation,
   determineIntent,
   getPendingDisambiguation,
+  isExplicitEditRequest,
   maybeClarifyInstruction,
   maybeSuggestClarificationAnswers,
-  parseDisambiguationPick
+  parseDisambiguationPick,
+  shouldContinueAfterValidationPass
 } from '../forge/intent';
 import { formatDuration, logOutput } from '../forge/logging';
 import { answerQuestion } from '../forge/questions';
@@ -230,6 +232,10 @@ export async function runForge(
     if (forceEditAfterClarification) {
       intent = 'edit';
     }
+    if (isExplicitEditRequest(instruction) && intent !== 'edit') {
+      recordStep('Intent override', 'Explicit edit request detected.');
+      intent = 'edit';
+    }
     recordStep('Intent', intent);
 
     const activeEditor = vscode.window.activeTextEditor;
@@ -256,6 +262,7 @@ export async function runForge(
       return;
     }
 
+    let assumptionsUsed: string[] = [];
     const clarifyFirst = getForgeSetting<boolean>('clarifyBeforeEdit') !== false && intent !== 'fix';
     if (clarifyFirst && !skipClarifyCheck) {
       const clarification = await maybeClarifyInstruction(
@@ -361,6 +368,7 @@ export async function runForge(
             const assumptions = buildDefaultAssumptions(clarification, relativePath);
             logOutput(output, panelApi, 'Ambiguous prompt detected. Proceeding with assumptions:');
             assumptions.forEach((line) => logOutput(output, panelApi, `- ${line}`));
+            assumptionsUsed = assumptions;
             instruction = `${instruction}\n\nAssumptions:\n${assumptions.map((line) => `- ${line}`).join('\n')}`;
           } else if (gate === 'always') {
             logOutput(output, panelApi, 'Need clarification before editing:');
@@ -387,9 +395,20 @@ export async function runForge(
 
     if (intent === 'fix') {
       recordStep('Validation strategy', 'validate-first');
-      await runValidationFirstFix(rootPath, instruction, output, panelApi, signal, history);
-      setStatus('Done');
-      return;
+      const handled = await runValidationFirstFix(
+        rootPath,
+        instruction,
+        output,
+        panelApi,
+        signal,
+        history,
+        { continueOnPass: shouldContinueAfterValidationPass(instruction) }
+      );
+      if (handled) {
+        setStatus('Done');
+        return;
+      }
+      logOutput(output, panelApi, 'Validation passed; continuing with edit request.');
     }
 
     if (!enableMultiFile && (!activeFilePath || !relativePath)) {
@@ -416,6 +435,7 @@ export async function runForge(
     const combinedContext = [contextBundle?.text, toolContext].filter(Boolean).join('\n\n');
     let appliedUpdates: FileUpdate[] = [];
     let changeSummaryText = '';
+    let changeDetailText = '';
 
     if (!enableMultiFile && !(skipConfirmations || skipTargetConfirmation)) {
       const confirmTarget = await vscode.window.showWarningMessage(
@@ -461,6 +481,7 @@ export async function runForge(
       );
 
       const summaries: string[] = [];
+      const diffSnippets: string[] = [];
       for (const file of updatedFiles) {
         const summary = getLineChangeSummary(file.original, file.updated, file.relativePath);
         if (summary) {
@@ -471,12 +492,16 @@ export async function runForge(
           panelApi.appendDiff(inlineDiff);
         }
         if (inlineDiff) {
+          diffSnippets.push(inlineDiff.join('\n'));
+        }
+        if (inlineDiff) {
           recordPayload(`Inline diff: ${file.relativePath}`, inlineDiff.join('\n'));
         }
       }
       summaries.forEach((line) => log(line));
       const summaryBlock = buildChangeSummaryText(updatedFiles, summaries);
       changeSummaryText = summaryBlock.text;
+      changeDetailText = diffSnippets.join('\n\n');
 
       if (!skipConfirmations) {
         const confirmApply = await vscode.window.showWarningMessage(
@@ -544,6 +569,7 @@ export async function runForge(
       }
       if (inlineDiff) {
         recordPayload(`Inline diff: ${updatedFile.relativePath}`, inlineDiff.join('\n'));
+        changeDetailText = inlineDiff.join('\n');
       }
 
       const showDiffPreview = getForgeSetting<boolean>('showDiffPreview') !== false;
@@ -629,6 +655,7 @@ export async function runForge(
           instruction,
           changeSummaryText,
           validationResult.output,
+          changeDetailText,
           signal
         );
         if (verificationResult.status === 'pass') {
@@ -697,6 +724,11 @@ export async function runForge(
             logOutput(output, panelApi, line);
           }
         });
+      }
+      if (assumptionsUsed.length > 0) {
+        logOutput(output, panelApi, 'Assumptions used (please confirm or correct):');
+        assumptionsUsed.forEach((line) => logOutput(output, panelApi, `- ${line}`));
+        logOutput(output, panelApi, 'Reply with corrections if any, and I will adjust.');
       }
 
       const enableGitWorkflow = getForgeSetting<boolean>('enableGitWorkflow') === true;

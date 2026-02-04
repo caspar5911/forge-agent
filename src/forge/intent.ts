@@ -5,6 +5,7 @@ import type { ChatMessage } from '../llm/client';
 import { INTENT_SCHEMA, CLARIFICATION_SCHEMA, CLARIFICATION_SUGGEST_SCHEMA, DISAMBIGUATION_SCHEMA } from './schemas';
 import { logOutput, logVerbose } from './logging';
 import { listWorkspaceFiles } from './workspaceFiles';
+import { extractExplicitPaths } from './fileSearch';
 import { getForgeSetting } from './settings';
 import { requestStructuredJson } from '../llm/structured';
 import { recordPrompt, recordResponse } from './trace';
@@ -82,6 +83,30 @@ export async function determineIntent(
   }
 
   return classifyIntent(instruction);
+}
+
+/** Detect explicit edit requests that should override fix/question intent. */
+export function isExplicitEditRequest(instruction: string): boolean {
+  const explicitPaths = extractExplicitPaths(instruction);
+  if (explicitPaths.length === 0) {
+    return false;
+  }
+  const lowered = instruction.toLowerCase();
+  const returnFull = /\breturn (the )?full file content(s)?\b/.test(lowered);
+  const hasEditVerb = /\b(edit|update|change|fix|refactor|remove|delete|add|implement|guard|default|modify|adjust|rename)\b/.test(lowered);
+  const explicitFileList = /\bedit these files\b|\bupdate these files\b|\bfiles:\s*-/.test(lowered);
+  return returnFull || hasEditVerb || explicitFileList;
+}
+
+/** Decide whether to continue editing even if validation already passes. */
+export function shouldContinueAfterValidationPass(instruction: string): boolean {
+  const lowered = instruction.toLowerCase();
+  if (isExplicitEditRequest(instruction)) {
+    return true;
+  }
+  const hasEditVerb = /\b(edit|update|change|fix|refactor|remove|delete|add|implement|guard|default|modify|adjust|rename)\b/.test(lowered);
+  const returnFull = /\breturn (the )?full file content(s)?\b/.test(lowered);
+  return hasEditVerb || returnFull;
 }
 
 /** Rule-based fallback intent classifier. */

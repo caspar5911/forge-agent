@@ -8,7 +8,7 @@ import { getForgeSetting } from './settings';
 import { recordPayload, recordStep } from './trace';
 import { verifyChanges } from './verification';
 import { generateHumanSummary } from './humanSummary';
-import { getLineChangeSummary } from './diff';
+import { buildInlineDiffPreview, getLineChangeSummary } from './diff';
 import type { FileUpdate } from './types';
 import type { ChatHistoryItem } from './types';
 import type { ForgeUiApi } from '../ui/api';
@@ -119,14 +119,15 @@ export async function runValidationFirstFix(
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
   signal?: AbortSignal,
-  history?: ChatHistoryItem[]
-): Promise<void> {
+  history?: ChatHistoryItem[],
+  options?: { continueOnPass?: boolean }
+): Promise<boolean> {
   logOutput(output, panelApi, 'Running validation (fix mode)...');
   recordStep('Validation mode', 'fix');
   let validationResult = await maybeRunValidation(rootPath, output);
   if (validationResult.ok) {
     logOutput(output, panelApi, 'Validation already passing.');
-    return;
+    return options?.continueOnPass ? false : true;
   }
 
   const autoFixValidation = getForgeSetting<boolean>('autoFixValidation') === true;
@@ -136,7 +137,7 @@ export async function runValidationFirstFix(
 
   if (!autoFixValidation || maxFixRetries === 0) {
     logOutput(output, panelApi, 'Auto-fix disabled.');
-    return;
+    return true;
   }
 
   while (true) {
@@ -167,10 +168,12 @@ export async function runValidationFirstFix(
     }
 
     const summaryText = buildFixSummary(lastUpdates);
+    const detailText = buildFixDetails(lastUpdates);
     const verification = await verifyChanges(
       instruction,
       summaryText,
       validationResult.output,
+      detailText,
       signal
     );
     if (verification.status === 'pass') {
@@ -206,7 +209,7 @@ export async function runValidationFirstFix(
 
   if (!validationResult.ok) {
     logOutput(output, panelApi, 'Validation still failing after auto-fix attempts.');
-    return;
+    return true;
   }
 
   const finalSummary = buildFixSummary(lastUpdates);
@@ -217,6 +220,7 @@ export async function runValidationFirstFix(
       summary.split(/\r?\n/).forEach((line) => logOutput(output, panelApi, line));
     }
   }
+  return true;
 }
 
 function buildFixSummary(updates: FileUpdate[] | null): string {
@@ -234,6 +238,20 @@ function buildFixSummary(updates: FileUpdate[] | null): string {
     return updates.map((file) => `- ${file.relativePath}`).join('\n');
   }
   return summaries.join('\n');
+}
+
+function buildFixDetails(updates: FileUpdate[] | null): string {
+  if (!updates || updates.length === 0) {
+    return '';
+  }
+  const details: string[] = [];
+  updates.forEach((file) => {
+    const diff = buildInlineDiffPreview(file.original, file.updated, file.relativePath);
+    if (diff && diff.length > 0) {
+      details.push(diff.join('\n'));
+    }
+  });
+  return details.join('\n\n');
 }
 
 /** Choose the highest-priority validation option. */

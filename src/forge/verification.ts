@@ -15,22 +15,25 @@ export async function verifyChanges(
   instruction: string,
   changeSummary: string,
   validationOutput: string | null,
+  changeDetails?: string | null,
   signal?: AbortSignal
 ): Promise<VerificationResult> {
   const validationBlock = validationOutput ? `\n\nValidation output:\n${validationOutput}` : '';
+  const detailBlock = changeDetails ? `\n\nChange details:\n${changeDetails}` : '';
   const messages: ChatMessage[] = [
     {
       role: 'system',
       content:
         'You are verifying whether code changes satisfy the instruction. ' +
         'Return ONLY valid JSON: {"status":"pass|fail","issues":["..."],"confidence":"low|medium|high"}. ' +
-        'If any requirement is unmet or risky, set status to "fail" and list issues.'
+        'Use the change summary/details to decide if requirements are met. ' +
+        'Do not fail solely because validation output lacks confirmation.'
     },
     {
       role: 'user',
       content:
         `Instruction: ${instruction}\n\n` +
-        `Change summary:\n${changeSummary || '(no summary)'}${validationBlock}`
+        `Change summary:\n${changeSummary || '(no summary)'}${detailBlock}${validationBlock}`
     }
   ];
 
