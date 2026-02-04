@@ -34,7 +34,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Git intent detection (explicit or LLM-based "smart" mode)
 - Multi-round clarification when requirements are ambiguous
 - Clarification proposals (Forge can propose best-guess answers and a plan)
-- Schema-first structured JSON outputs (auto), with repair fallback + silent retries
+- Structured JSON outputs validated against JSON Schema (Ajv), with repair fallback + silent retries
 - Two-call flow: machine JSON first, then a separate human summary
 - Chunked update requests for reliability on large edits
 - Plan-then-execute summaries (short plan shown before edits)
@@ -56,7 +56,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - File edits require JSON payloads (no partial patch streaming)
 - Depth-limited workspace scan for large repos
 - Peek output truncates large payloads for safety
-- Some backends may not support schema-constrained decoding; Forge falls back to repair + retry
+- Backends vary in structured-output features; Forge enforces JSON via prompts, validates against JSON Schema, and retries with stricter instructions when needed
 - Planning/verification adds extra LLM calls (slower but more reliable)
 - Token trimming can drop older context when requests exceed the model limit
 - Validation-first fix mode continues with edits if the prompt explicitly requests changes
@@ -67,7 +67,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - `src/extension/lifecycle.ts`: settings sync + keep-alive
 - `src/forge/`: intent detection, file selection, updates, validation, Git actions
 - `src/ui/`: webview UI, panel, sidebar view
-- `src/llm/`: OpenAI-compatible HTTP client, structured JSON, token budget
+- `src/llm/`: LangChain-based OpenAI-compatible chat adapter, structured JSON (Ajv), token budget
 - `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: context, symbol index, validation, Git helpers
 
 ## Quickstart (Local Setup)

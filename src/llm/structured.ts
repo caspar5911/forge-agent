@@ -1,13 +1,20 @@
-/** Structured JSON helper with schema-first decoding and repair fallback. */
-import type { ChatCompletionResponse, ChatMessage, ResponseFormat } from './client';
-import { callChatCompletion, callChatCompletionWithOptions } from './client';
+/**
+ * Structured JSON helper.
+ *
+ * Previous versions of Forge relied on OpenAI's `response_format` (json_schema/json_object).
+ * That does *not* exist across all OpenAI-compatible backends (and is not guaranteed for vLLM/Ollama),
+ * so we standardize on:
+ * 1) prompt for strict JSON
+ * 2) parse + repair
+ * 3) validate against the provided JSON schema (Ajv)
+ * 4) retry with stricter system instructions when needed
+ */
+import Ajv, { type ValidateFunction } from 'ajv';
+import type { ChatCompletionResponse, ChatMessage } from './client';
+import { callChatCompletion } from './client';
 import type { LLMConfig } from './config';
 
 export type JsonSchema = Record<string, unknown>;
-
-type SchemaSupport = 'unknown' | 'json_schema' | 'json_object' | 'none';
-
-let schemaSupport: SchemaSupport = 'unknown';
 
 export type StructuredRequestOptions = {
   config?: LLMConfig;
@@ -15,7 +22,16 @@ export type StructuredRequestOptions = {
   maxRetries?: number;
 };
 
-/** Request a schema-constrained JSON response with retries and repair fallback. */
+const ajv = new Ajv({
+  // We compile many small schemas and want actionable errors when the model drifts.
+  allErrors: true,
+  // Our schemas come from prompts and are intentionally pragmatic, not fully strict JSONSchema drafts.
+  strict: false
+});
+
+const validatorCache = new WeakMap<object, ValidateFunction>();
+
+/** Request a schema-valid JSON response with retries and a small repair fallback. */
 export async function requestStructuredJson<T>(
   messages: ChatMessage[],
   schema: JsonSchema,
@@ -27,8 +43,9 @@ export async function requestStructuredJson<T>(
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const attemptMessages = attempt === 0 ? messages : buildStrictRetryMessages(messages, attempt);
     try {
-      const response = await callStructuredCompletion(attemptMessages, schema, options);
+      const response = await callChatCompletion(options.config ?? {}, attemptMessages, options.signal);
       const parsed = extractJsonFromResponse(response);
+      assertValidSchema(schema, parsed);
       return parsed as T;
     } catch (error) {
       lastError = error;
@@ -36,65 +53,6 @@ export async function requestStructuredJson<T>(
   }
 
   throw lastError ?? new Error('Structured JSON request failed.');
-}
-
-async function callStructuredCompletion(
-  messages: ChatMessage[],
-  schema: JsonSchema,
-  options: StructuredRequestOptions
-): Promise<ChatCompletionResponse> {
-  const config = options.config ?? {};
-  if (schemaSupport === 'json_schema') {
-    return callChatCompletionWithOptions(config, messages, { responseFormat: buildJsonSchemaFormat(schema) }, options.signal);
-  }
-  if (schemaSupport === 'json_object') {
-    return callChatCompletionWithOptions(config, messages, { responseFormat: { type: 'json_object' } }, options.signal);
-  }
-  if (schemaSupport === 'none') {
-    return callChatCompletion(config, messages, options.signal);
-  }
-
-  try {
-    const response = await callChatCompletionWithOptions(
-      config,
-      messages,
-      { responseFormat: buildJsonSchemaFormat(schema) },
-      options.signal
-    );
-    schemaSupport = 'json_schema';
-    return response;
-  } catch (error) {
-    if (isSchemaFormatUnsupported(error)) {
-      try {
-        const response = await callChatCompletionWithOptions(
-          config,
-          messages,
-          { responseFormat: { type: 'json_object' } },
-          options.signal
-        );
-        schemaSupport = 'json_object';
-        return response;
-      } catch (fallbackError) {
-        if (isSchemaFormatUnsupported(fallbackError)) {
-          schemaSupport = 'none';
-          return callChatCompletion(config, messages, options.signal);
-        }
-        throw fallbackError;
-      }
-    }
-    throw error;
-  }
-}
-
-function buildJsonSchemaFormat(schema: JsonSchema): ResponseFormat {
-  return {
-    type: 'json_schema',
-    json_schema: {
-      name: 'StructuredResponse',
-      schema,
-      strict: true
-    }
-  };
 }
 
 function extractJsonFromResponse(response: ChatCompletionResponse): unknown {
@@ -122,12 +80,43 @@ function extractJsonFromResponse(response: ChatCompletionResponse): unknown {
   }
 }
 
+function assertValidSchema(schema: JsonSchema, data: unknown): void {
+  const validate = getValidator(schema);
+  const ok = validate(data);
+  if (ok) {
+    return;
+  }
+
+  const details = (validate.errors ?? [])
+    .slice(0, 6)
+    .map((err) => {
+      const where = err.instancePath || '(root)';
+      return `${where} ${err.message ?? 'is invalid'}`;
+    })
+    .join('; ');
+
+  throw new Error(`JSON did not match schema: ${details || 'validation failed'}`);
+}
+
+function getValidator(schema: JsonSchema): ValidateFunction {
+  const cached = validatorCache.get(schema);
+  if (cached) {
+    return cached;
+  }
+
+  // Ajv expects a plain object. Our schemas are already JSON-schema shaped.
+  const compiled = ajv.compile(schema);
+  validatorCache.set(schema, compiled);
+  return compiled;
+}
+
 function buildStrictRetryMessages(messages: ChatMessage[], attempt: number): ChatMessage[] {
-  const strict = attempt === 1
-    ? 'Return ONLY valid JSON. It must be parseable by JSON.parse. No code fences, no extra text.'
-    : attempt === 2
-      ? 'Return ONLY valid minified JSON. Escape all newlines as \\n and quotes inside strings as \\".'
-      : 'Return ONLY minified JSON. No whitespace outside strings. If unsure, return {}.';
+  const strict =
+    attempt === 1
+      ? 'Return ONLY valid JSON. It must be parseable by JSON.parse. No code fences, no extra text.'
+      : attempt === 2
+        ? 'Return ONLY valid minified JSON. Escape all newlines as \\n and quotes inside strings as \\".'
+        : 'Return ONLY minified JSON. No whitespace outside strings. If unsure, return {}.';
   return [{ role: 'system', content: strict }, ...messages];
 }
 
@@ -205,16 +194,4 @@ function peekNextNonWhitespace(text: string, start: number): string | null {
     }
   }
   return null;
-}
-
-function isSchemaFormatUnsupported(error: unknown): boolean {
-  const message = String(error ?? '').toLowerCase();
-  return (
-    message.includes('response_format') ||
-    message.includes('json_schema') ||
-    message.includes('json schema') ||
-    message.includes('unsupported') ||
-    message.includes('unrecognized') ||
-    message.includes('unknown field')
-  );
 }
