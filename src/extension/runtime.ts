@@ -28,7 +28,7 @@ import { buildContextBundle } from '../forge/contextBundle';
 import { generateHumanSummary } from '../forge/humanSummary';
 import { generatePlanSummary } from '../forge/planSummary';
 import { verifyChanges } from '../forge/verification';
-import type { ChatHistoryItem, FileUpdate } from '../forge/types';
+import type { ChatHistoryItem, FileUpdate, Intent } from '../forge/types';
 import type { ScaffoldType } from '../forge/updates';
 import {
   applyFileUpdates,
@@ -37,7 +37,7 @@ import {
   requestMultiFileUpdate,
   requestSingleFileUpdate
 } from '../forge/updates';
-import { maybeRunValidation, runValidationFirstFix } from '../forge/validationFlow';
+import { buildValidationFailureContext, maybeRunValidation, runValidationFirstFix } from '../forge/validationFlow';
 import { listWorkspaceFiles } from '../forge/workspaceFiles';
 import {
   buildChangeSummaryText,
@@ -49,6 +49,7 @@ import {
 import type { ForgeUiApi } from '../ui/api';
 import type { ForgePanel } from '../ui/panel';
 import type { ForgeViewProvider } from '../ui/view';
+import { appendRunMemory, loadMemoryContext, type MemoryEntry, type MemoryOptions } from '../forge/memory';
 
 export type ForgeRuntimeState = {
   lastActiveFile: string | null;
@@ -110,6 +111,21 @@ export async function runForge(
   panelApi?: ForgeUiApi,
   history?: ChatHistoryItem[]
 ): Promise<void> {
+  let rootPath: string | null = null;
+  let intent: Intent | null = null;
+  let planSummary: string[] | null = null;
+  let changeSummaryText = '';
+  let changeDetailText = '';
+  let appliedUpdates: FileUpdate[] = [];
+  let verificationResult: { status: 'pass' | 'fail'; issues: string[]; confidence?: string } | null = null;
+  let validationSummary: { ok: boolean; command: string | null; label: string | null } | null = null;
+  let memoryContext: string | null = null;
+  let memoryEntry: MemoryEntry | null = null;
+  let memoryOptions: MemoryOptions | null = null;
+  let memoryOutcome: MemoryEntry['outcome'] = 'completed';
+  const decisions: string[] = [];
+  const constraints: string[] = [];
+
   state.activeAbortController?.abort();
   state.activeAbortController = new AbortController();
   const signal = state.activeAbortController.signal;
@@ -203,7 +219,23 @@ export async function runForge(
       }
     }
 
-    const rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    // Load persisted memory (best-effort) to ground prompts across runs.
+    const memoryEnabled = getForgeSetting<boolean>('enableMemory') !== false;
+    memoryOptions = {
+      maxEntries: Math.max(1, getForgeSetting<number>('memoryMaxEntries') ?? 30),
+      maxChars: Math.max(2000, getForgeSetting<number>('memoryMaxChars') ?? 12000),
+      compactionTargetEntries: Math.max(1, getForgeSetting<number>('memoryCompactionTargetEntries') ?? 12),
+      includeCompacted: getForgeSetting<boolean>('memoryIncludeCompacted') !== false
+    };
+    if (memoryEnabled && rootPath) {
+      memoryContext = loadMemoryContext(rootPath, memoryOptions);
+      memoryEntry = {
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+        instruction
+      };
+    }
     const gitActions = await maybeDetectGitActions(instruction, output);
     if (gitActions.length > 0) {
       recordStep('Git intent', gitActions.map((action) => action.type).join(', '));
@@ -223,6 +255,7 @@ export async function runForge(
         );
         if (confirm !== 'Run') {
           void vscode.window.showInformationMessage('Forge: Git actions cancelled.');
+          memoryOutcome = 'cancelled';
           setStatus('Cancelled');
           return;
         }
@@ -232,7 +265,7 @@ export async function runForge(
       return;
     }
 
-    let intent = await determineIntent(instruction, output, panelApi, signal, history);
+    intent = await determineIntent(instruction, output, panelApi, signal, history);
     if (forceEditAfterClarification) {
       intent = 'edit';
     }
@@ -241,6 +274,9 @@ export async function runForge(
       intent = 'edit';
     }
     recordStep('Intent', intent);
+    if (memoryEntry) {
+      memoryEntry.intent = intent;
+    }
 
     const activeEditor = vscode.window.activeTextEditor;
     let activeFilePath: string | null = activeEditor?.document.uri.fsPath ?? null;
@@ -261,7 +297,13 @@ export async function runForge(
     }
 
     if (intent === 'question') {
-      await answerQuestion(instruction, rootPath, output, panelApi, signal, history);
+      await answerQuestion(instruction, rootPath, output, panelApi, signal, history, memoryContext ?? undefined);
+      if (memoryEntry) {
+        memoryEntry.summary = 'Answered a question.';
+        memoryEntry.decisions = decisions;
+        memoryEntry.constraints = constraints;
+        memoryEntry.outcome = memoryOutcome;
+      }
       setStatus('Done');
       return;
     }
@@ -374,6 +416,9 @@ export async function runForge(
             logOutput(output, panelApi, 'Ambiguous prompt detected. Proceeding with assumptions:');
             assumptions.forEach((line) => logOutput(output, panelApi, `- ${line}`));
             assumptionsUsed = assumptions;
+            if (assumptions.length > 0) {
+              decisions.push(`Assumptions: ${assumptions.join(' | ')}`);
+            }
             instruction = `${instruction}\n\nAssumptions:\n${assumptions.map((line) => `- ${line}`).join('\n')}`;
           } else if (gate === 'always') {
             logOutput(output, panelApi, 'Need clarification before editing:');
@@ -398,17 +443,19 @@ export async function runForge(
       }
     }
 
-    const planSummary = await generatePlanSummary(
+    planSummary = await generatePlanSummary(
       instruction,
       rootPath,
       output,
       panelApi,
       signal,
-      history
+      history,
+      memoryContext ?? undefined
     );
     if (planSummary && planSummary.length > 0) {
       logOutput(output, panelApi, 'Plan summary:');
       planSummary.forEach((step) => logOutput(output, panelApi, `- ${step}`));
+      decisions.push(`Plan: ${planSummary.join(' | ')}`);
     }
 
     if (intent === 'fix') {
@@ -432,6 +479,10 @@ export async function runForge(
     if (!enableMultiFile && (!activeFilePath || !relativePath)) {
       log('No active editor. Open a file to edit first.');
       void vscode.window.showErrorMessage('Forge: Open a file to edit first.');
+      if (memoryEntry) {
+        memoryEntry.summary = 'No active file available for editing.';
+      }
+      memoryOutcome = 'error';
       setStatus('Idle');
       return;
     }
@@ -444,16 +495,16 @@ export async function runForge(
       activeFilePath,
       output,
       panelApi,
-      signal
+      signal,
+      memoryContext ?? undefined
     );
     const contextBundle = await buildContextBundle(instruction, rootPath, 3, 2000, signal);
     if (contextBundle && contextBundle.files.length > 0) {
       recordStep('Context bundle', contextBundle.files.join('\n'));
     }
-    const combinedContext = [contextBundle?.text, toolContext].filter(Boolean).join('\n\n');
-    let appliedUpdates: FileUpdate[] = [];
-    let changeSummaryText = '';
-    let changeDetailText = '';
+    // Combine memory, retrieval snippets, and tool output for prompt grounding.
+    const memoryBlock = memoryContext ? `Project memory:\n${memoryContext}` : null;
+    const combinedContext = [memoryBlock, contextBundle?.text, toolContext].filter(Boolean).join('\n\n');
 
     if (!enableMultiFile && !(skipConfirmations || skipTargetConfirmation)) {
       const confirmTarget = await vscode.window.showWarningMessage(
@@ -464,6 +515,7 @@ export async function runForge(
 
       if (confirmTarget !== 'Continue') {
         void vscode.window.showInformationMessage('Forge: Cancelled.');
+        memoryOutcome = 'cancelled';
         setStatus('Cancelled');
         return;
       }
@@ -486,6 +538,9 @@ export async function runForge(
 
       if (!updatedFiles || updatedFiles.length === 0) {
         void vscode.window.showInformationMessage('Forge: No changes produced.');
+        if (memoryEntry) {
+          memoryEntry.summary = 'No changes produced.';
+        }
         setStatus('No changes');
         return;
       }
@@ -531,6 +586,7 @@ export async function runForge(
 
         if (confirmApply !== 'Apply') {
           void vscode.window.showInformationMessage('Forge: Changes not applied.');
+          memoryOutcome = 'cancelled';
           setStatus('Cancelled');
           return;
         }
@@ -538,6 +594,10 @@ export async function runForge(
 
       const writeOk = applyFileUpdates(updatedFiles, output, panelApi);
       if (!writeOk) {
+        if (memoryEntry) {
+          memoryEntry.summary = 'Failed to write updated files.';
+        }
+        memoryOutcome = 'error';
         setStatus('Error');
         return;
       }
@@ -545,6 +605,10 @@ export async function runForge(
       if (!activeFilePath || !relativePath) {
         log('No active editor. Open a file to edit first.');
         void vscode.window.showErrorMessage('Forge: Open a file to edit first.');
+        if (memoryEntry) {
+          memoryEntry.summary = 'No active file available for editing.';
+        }
+        memoryOutcome = 'error';
         setStatus('Idle');
         return;
       }
@@ -561,6 +625,9 @@ export async function runForge(
 
       if (!updatedFile) {
         void vscode.window.showInformationMessage('Forge: No changes produced.');
+        if (memoryEntry) {
+          memoryEntry.summary = 'No changes produced.';
+        }
         setStatus('No changes');
         return;
       }
@@ -617,6 +684,7 @@ export async function runForge(
 
         if (confirmApply !== 'Apply') {
           void vscode.window.showInformationMessage('Forge: Changes not applied.');
+          memoryOutcome = 'cancelled';
           setStatus('Cancelled');
           return;
         }
@@ -628,19 +696,27 @@ export async function runForge(
       } catch (error) {
         log(`Write error: ${String(error)}`);
         void vscode.window.showErrorMessage('Forge: Failed to write the file.');
+        if (memoryEntry) {
+          memoryEntry.summary = 'Failed to write updated file.';
+        }
+        memoryOutcome = 'error';
         setStatus('Error');
         return;
       }
+    }
+
+    if (memoryEntry && appliedUpdates.length > 0) {
+      memoryEntry.filesChanged = appliedUpdates.map((update) => update.relativePath);
     }
 
     if (rootPath) {
       const autoFixValidation = getForgeSetting<boolean>('autoFixValidation') === true;
       const maxFixRetries = Math.max(0, getForgeSetting<number>('autoFixMaxRetries') ?? 0);
       let remainingFixRetries = maxFixRetries;
-      let verificationResult: { status: 'pass' | 'fail'; issues: string[]; confidence?: string } | null = null;
+      verificationResult = null;
 
       setStatus('Running validation...');
-      let validationResult = await maybeRunValidation(rootPath, output);
+      let validationResult = await maybeRunValidation(rootPath, output, instruction);
 
       while (true) {
         if (!validationResult.ok) {
@@ -648,6 +724,11 @@ export async function runForge(
             const attempt = maxFixRetries - remainingFixRetries + 1;
             log(`Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
             setStatus(`Auto-fix ${attempt}/${maxFixRetries}`);
+            // Provide validation failures + memory context to guide the auto-fix pass.
+            const failureContext = buildValidationFailureContext(validationResult);
+            const autoFixContext = [failureContext, memoryContext ? `Project memory:\n${memoryContext}` : null]
+              .filter(Boolean)
+              .join('\n\n') || undefined;
             const fixed = await attemptAutoFix(
               rootPath,
               instruction,
@@ -655,7 +736,8 @@ export async function runForge(
               output,
               panelApi,
               history,
-              signal
+              signal,
+              autoFixContext
             );
             if (!fixed) {
               break;
@@ -664,7 +746,7 @@ export async function runForge(
             changeSummaryText = buildChangeSummaryText(fixed, []).text;
             remainingFixRetries -= 1;
             setStatus('Re-running validation...');
-            validationResult = await maybeRunValidation(rootPath, output);
+            validationResult = await maybeRunValidation(rootPath, output, instruction);
             continue;
           }
           break;
@@ -677,6 +759,13 @@ export async function runForge(
           changeDetailText,
           signal
         );
+        if (memoryEntry) {
+          memoryEntry.verification = {
+            status: verificationResult.status,
+            confidence: verificationResult.confidence,
+            issues: verificationResult.issues
+          };
+        }
         if (verificationResult.status === 'pass') {
           break;
         }
@@ -685,7 +774,13 @@ export async function runForge(
           const attempt = maxFixRetries - remainingFixRetries + 1;
           log(`Auto-fix (verification) ${attempt} of ${maxFixRetries}...`);
           setStatus(`Auto-fix ${attempt}/${maxFixRetries}`);
-          const extraContext = verificationResult.issues.join('\n');
+          const failureContext = buildValidationFailureContext(validationResult);
+          const extraContextParts = [
+            verificationResult.issues.join('\n'),
+            failureContext,
+            memoryContext ? `Project memory:\n${memoryContext}` : null
+          ].filter(Boolean);
+          const extraContext = extraContextParts.join('\n\n');
           const fixed = await attemptAutoFix(
             rootPath,
             instruction,
@@ -703,7 +798,7 @@ export async function runForge(
           changeSummaryText = buildChangeSummaryText(fixed, []).text;
           remainingFixRetries -= 1;
           setStatus('Re-running validation...');
-          validationResult = await maybeRunValidation(rootPath, output);
+          validationResult = await maybeRunValidation(rootPath, output, instruction);
           continue;
         }
         break;
@@ -711,8 +806,18 @@ export async function runForge(
 
       if (!validationResult.ok) {
         void vscode.window.showErrorMessage('Forge: Validation failed.');
+        memoryOutcome = 'error';
         setStatus('Validation failed');
         return;
+      }
+
+      validationSummary = {
+        ok: validationResult.ok,
+        command: validationResult.command,
+        label: validationResult.label
+      };
+      if (memoryEntry) {
+        memoryEntry.validation = validationSummary;
       }
 
       if (verificationResult && verificationResult.status === 'fail') {
@@ -730,6 +835,9 @@ export async function runForge(
         history
       );
       if (summary) {
+        if (memoryEntry) {
+          memoryEntry.summary = summary;
+        }
         logOutput(output, panelApi, 'Summary:');
         summary.split(/\r?\n/).forEach((line) => {
           if (line.trim().length > 0) {
@@ -737,6 +845,9 @@ export async function runForge(
           }
         });
       } else if (changeSummaryText) {
+        if (memoryEntry) {
+          memoryEntry.summary = changeSummaryText;
+        }
         logOutput(output, panelApi, 'Summary:');
         changeSummaryText.split(/\r?\n/).forEach((line) => {
           if (line.trim().length > 0) {
@@ -772,6 +883,29 @@ export async function runForge(
       }
     } else {
       endTrace();
+    }
+    if (memoryEntry && memoryOptions && rootPath && !signal.aborted) {
+      if (!memoryEntry.summary) {
+        if (memoryOutcome === 'cancelled') {
+          memoryEntry.summary = 'Run cancelled before applying changes.';
+        } else if (memoryOutcome === 'error') {
+          memoryEntry.summary = 'Run failed before completion.';
+        } else if (changeSummaryText) {
+          memoryEntry.summary = changeSummaryText;
+        } else if (appliedUpdates.length > 0) {
+          memoryEntry.summary = 'Changes applied.';
+        } else {
+          memoryEntry.summary = 'Run completed with no changes.';
+        }
+      }
+      memoryEntry.decisions = decisions.length > 0 ? decisions : undefined;
+      memoryEntry.constraints = constraints.length > 0 ? constraints : undefined;
+      memoryEntry.outcome = memoryOutcome;
+      try {
+        await appendRunMemory(rootPath, memoryEntry, memoryOptions, signal);
+      } catch {
+        // Memory is best-effort and should never block the core workflow.
+      }
     }
     if (!signal.aborted) {
       const doneMessage = `Done in ${formatDuration(elapsedMs)}.`;

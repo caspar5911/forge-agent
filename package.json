@@ -82,6 +82,51 @@
           "default": "",
           "description": "Optional API key for the local LLM server."
         },
+        "forge.llmPlanModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model override for planning calls."
+        },
+        "forge.llmPlanEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Optional endpoint override for planning calls."
+        },
+        "forge.llmPlanApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key override for planning calls."
+        },
+        "forge.llmVerifyModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model override for verification calls."
+        },
+        "forge.llmVerifyEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Optional endpoint override for verification calls."
+        },
+        "forge.llmVerifyApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key override for verification calls."
+        },
+        "forge.llmSummaryModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model override for summary calls."
+        },
+        "forge.llmSummaryEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Optional endpoint override for summary calls."
+        },
+        "forge.llmSummaryApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key override for summary calls."
+        },
         "forge.profile": {
           "type": "string",
           "enum": [
@@ -111,6 +156,15 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically select and run the best validation command (test > typecheck > lint > build)."
+        },
+        "forge.autoValidationMode": {
+          "type": "string",
+          "enum": [
+            "smart",
+            "all"
+          ],
+          "default": "smart",
+          "description": "When autoValidation is enabled, choose whether to run all checks or only those inferred from the instruction."
         },
         "forge.enableMultiFile": {
           "type": "boolean",
@@ -277,6 +331,34 @@
           "minimum": 0,
           "description": "Maximum total characters of chat history to include as context."
         },
+        "forge.enableMemory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Persist a compact run memory to .forge/memory.json and inject it into prompts."
+        },
+        "forge.memoryMaxEntries": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Maximum number of recent memory entries to keep before compaction."
+        },
+        "forge.memoryMaxChars": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 2000,
+          "description": "Maximum characters to include when injecting memory context."
+        },
+        "forge.memoryCompactionTargetEntries": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "description": "Number of recent entries to keep when compacting memory."
+        },
+        "forge.memoryIncludeCompacted": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include the compacted memory summary in prompt context."
+        },
         "forge.qaMinSources": {
           "type": "number",
           "default": 1,
@@ -306,6 +388,62 @@
           "default": 200000,
           "minimum": 1024,
           "description": "Maximum file size in bytes to read when retrieving Q&A sources."
+        },
+        "forge.embeddingEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable embeddings-based retrieval for context and Q&A."
+        },
+        "forge.embeddingModel": {
+          "type": "string",
+          "default": "",
+          "description": "Embedding model name (OpenAI-compatible)."
+        },
+        "forge.embeddingEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Embedding endpoint base URL (defaults to forge.llmEndpoint)."
+        },
+        "forge.embeddingApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Embedding API key (defaults to forge.llmApiKey)."
+        },
+        "forge.embeddingTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "Timeout in milliseconds for embedding requests."
+        },
+        "forge.embeddingMaxFiles": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of files to embed for the repo index."
+        },
+        "forge.embeddingMaxFileBytes": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 1024,
+          "description": "Maximum file size in bytes to embed."
+        },
+        "forge.embeddingChunkChars": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 200,
+          "description": "Approximate number of characters per embedding chunk."
+        },
+        "forge.embeddingTopK": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Maximum number of embedding hits to use as context."
+        },
+        "forge.embeddingMinScore": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "description": "Minimum cosine similarity score required to accept an embedding hit."
         },
         "forge.intentUseLLM": {
           "type": "boolean",
@@ -360,7 +498,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "eval": "tsx scripts/run-evals.ts"
+    "eval": "tsx scripts/run-evals.ts",
+    "eval:repo": "tsx scripts/run-repo-evals.ts"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

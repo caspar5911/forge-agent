@@ -38,13 +38,17 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Two-call flow: machine JSON first, then a separate human summary
 - Chunked update requests for reliability on large edits
 - Plan-then-execute summaries (short plan shown before edits)
+- Model routing for plan/verify/summary calls (optional stronger model for reasoning)
 - Self-verification pass after edits (flags unmet requirements)
 - Agent loop for fixes (diagnose -> edit -> re-test -> repeat)
 - Context-first editing (auto-snippets from relevant files)
-- Semantic re-ranking for retrieval (LLM-assisted)
+- Optional embeddings index for repo retrieval with relevance gating (`.forge/embeddings.json`)
+- Semantic re-ranking for retrieval (LLM-assisted fallback when embeddings are disabled)
+- Persistent run memory with compaction (`.forge/memory.json`) injected into prompts
 - Token budget enforcement (auto-trim + retry on context-length errors)
 - Tool-aware preflight (read file / diff / validation to ground edits)
 - Evaluation harness with regression snapshots (`eval/results/`)
+- Repo-specific eval harness (`eval/repo-tasks.json`, `npm run eval:repo`)
 - Inline "Peek" panel showing steps, prompts, raw JSON payloads, diffs, and validation output (system prompts hidden; secrets redacted)
 - Basename disambiguation (prefers `src/` when duplicates exist)
 - Assumptions are surfaced for confirmation after edits
@@ -59,6 +63,7 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - Backends vary in structured-output features; Forge enforces JSON via prompts, validates against JSON Schema, and retries with stricter instructions when needed
 - Planning/verification adds extra LLM calls (slower but more reliable)
 - Token trimming can drop older context when requests exceed the model limit
+- Embeddings index build is best-effort and can be slow on large repos
 - Validation-first fix mode continues with edits if the prompt explicitly requests changes
 
 **Architecture**
@@ -66,6 +71,8 @@ Forge is an on-prem, agentic coding assistant built as a VS Code extension. It t
 - `src/extension/runtime.ts`: run orchestration and state management
 - `src/extension/lifecycle.ts`: settings sync + keep-alive
 - `src/forge/`: intent detection, file selection, updates, validation, Git actions
+- `src/forge/memory.ts`: persistent run memory + compaction
+- `src/forge/embeddingsIndex.ts`: repo embeddings index + vector search
 - `src/ui/`: webview UI, panel, sidebar view
 - `src/llm/`: LangChain-based OpenAI-compatible chat adapter, structured JSON (Ajv), token budget
 - `src/context/`, `src/indexer/`, `src/validation/`, `src/git/`: context, symbol index, validation, Git helpers
@@ -224,6 +231,12 @@ npm run eval
 ```
 The latest run is stored in `eval/results/latest.json`.
 
+Run the repo-specific task suite from `eval/repo-tasks.json`:
+```bash
+npm run eval:repo
+```
+The latest run is stored in `eval/results/repo-latest.json`.
+
 ## Settings Reference
 
 **Core LLM**
@@ -232,6 +245,17 @@ The latest run is stored in `eval/results/latest.json`.
 - `forge.llmApiKey`: Optional API key for the local LLM server
 - `forge.llmTimeoutMs`: Timeout in milliseconds for LLM requests
 - `forge.profile`: Behavior profile (`auto`, `balanced`, `manual`)
+
+**Model Routing**
+- `forge.llmPlanModel`: Override model for planning calls
+- `forge.llmPlanEndpoint`: Override endpoint for planning calls
+- `forge.llmPlanApiKey`: Override API key for planning calls
+- `forge.llmVerifyModel`: Override model for verification calls
+- `forge.llmVerifyEndpoint`: Override endpoint for verification calls
+- `forge.llmVerifyApiKey`: Override API key for verification calls
+- `forge.llmSummaryModel`: Override model for summary calls
+- `forge.llmSummaryEndpoint`: Override endpoint for summary calls
+- `forge.llmSummaryApiKey`: Override API key for summary calls
 
 **Editing and Confirmation**
 - `forge.enableMultiFile`: Allow the LLM to edit multiple files in one run
@@ -244,6 +268,7 @@ The latest run is stored in `eval/results/latest.json`.
 
 **Validation and Auto-fix**
 - `forge.autoValidation`: Automatically select and run the best validation command
+- `forge.autoValidationMode`: Run `all` checks or `smart` checks inferred from the instruction
 - `forge.autoFixValidation`: Attempt auto-fix on validation failures
 - `forge.autoFixMaxRetries`: Maximum auto-fix attempts
 - `forge.bestEffortFix`: Allow best-effort fixes (deps + missing files)
@@ -266,6 +291,25 @@ The latest run is stored in `eval/results/latest.json`.
 - `forge.qaMaxSnippets`: Maximum snippets to include in Q&A prompts
 - `forge.qaSnippetLines`: Context lines above/below a hit
 - `forge.qaMaxFileBytes`: Maximum file size to read for Q&A
+
+**Memory**
+- `forge.enableMemory`: Persist run memory to `.forge/memory.json`
+- `forge.memoryMaxEntries`: Maximum recent memory entries to keep
+- `forge.memoryMaxChars`: Maximum characters injected from memory
+- `forge.memoryCompactionTargetEntries`: Entries to keep when compacting memory
+- `forge.memoryIncludeCompacted`: Include compacted summary in prompts
+
+**Embeddings**
+- `forge.embeddingEnabled`: Enable embeddings-based retrieval
+- `forge.embeddingModel`: Embedding model name (OpenAI-compatible)
+- `forge.embeddingEndpoint`: Embedding endpoint base URL
+- `forge.embeddingApiKey`: Embedding API key
+- `forge.embeddingTimeoutMs`: Timeout in milliseconds for embedding requests
+- `forge.embeddingMaxFiles`: Maximum files to embed for the repo index
+- `forge.embeddingMaxFileBytes`: Maximum file size to embed
+- `forge.embeddingChunkChars`: Approximate characters per embedding chunk
+- `forge.embeddingTopK`: Maximum embedding hits to inject
+- `forge.embeddingMinScore`: Minimum cosine similarity score for a hit
 
 **Git**
 - `forge.enableGitWorkflow`: Enable the Git workflow after changes
@@ -297,13 +341,19 @@ The latest run is stored in `eval/results/latest.json`.
 - `FORGE_LLM_TIMEOUT_MS`
 - `FORGE_LLM_MAX_INPUT_TOKENS` (auto-trim input before send)
 - `FORGE_LLM_MODEL_PLAN`
+- `FORGE_LLM_ENDPOINT_PLAN`
+- `FORGE_LLM_API_KEY_PLAN`
 - `FORGE_LLM_MODEL_VERIFY`
+- `FORGE_LLM_ENDPOINT_VERIFY`
+- `FORGE_LLM_API_KEY_VERIFY`
 - `FORGE_LLM_MODEL_SUMMARY`
+- `FORGE_LLM_ENDPOINT_SUMMARY`
+- `FORGE_LLM_API_KEY_SUMMARY`
 
 ## Known Issues / Limitations
 - JSON payloads can still fail on very large outputs, even with retries
 - Very large diffs may slow down LLM responses
-- Retrieval uses LLM re-ranking (no embeddings yet)
+- Embeddings are optional; retrieval falls back to keyword + LLM re-ranking when disabled
 - Peek content is truncated for very large prompts/output blocks
 
 ## Roadmap (Phases)

@@ -35,7 +35,8 @@ export async function answerQuestion(
   output: vscode.OutputChannel,
   panelApi?: ForgeUiApi,
   signal?: AbortSignal,
-  history?: ChatHistoryItem[]
+  history?: ChatHistoryItem[],
+  memoryContext?: string
 ): Promise<void> {
   const lowered = instruction.toLowerCase();
   const config = vscode.workspace.getConfiguration('forge');
@@ -68,7 +69,7 @@ export async function answerQuestion(
         const chunk = chunksResult.chunks[i];
         const messages = mergeChatHistory(
           history,
-          buildProjectChunkMessages(chunk, i + 1, chunksResult.chunks.length)
+          buildProjectChunkMessages(chunk, i + 1, chunksResult.chunks.length, memoryContext)
         );
         recordPrompt(`Project summary chunk ${i + 1}/${chunksResult.chunks.length} prompt`, messages, true);
         const response = await callChatCompletion({}, messages, signal);
@@ -85,7 +86,7 @@ export async function answerQuestion(
 
       const finalMessages = mergeChatHistory(
         history,
-        buildProjectSummaryFromChunksMessages(instruction, partials)
+        buildProjectSummaryFromChunksMessages(instruction, partials, memoryContext)
       );
       recordPrompt('Project summary prompt', finalMessages, true);
       const response = await callChatCompletion({}, finalMessages, signal);
@@ -171,7 +172,7 @@ export async function answerQuestion(
 
   const messages = mergeChatHistory(
     history,
-    buildGroundedQuestionMessages(instruction, context, retrieval.sources)
+    buildGroundedQuestionMessages(instruction, context, retrieval.sources, memoryContext)
   );
   recordPrompt('Q&A prompt', messages, true);
   logOutput(output, panelApi, 'Requesting answer from the local LLM...');
@@ -204,7 +205,8 @@ export async function answerQuestion(
 function buildGroundedQuestionMessages(
   instruction: string,
   context: ProjectContext,
-  sources: SourceSnippet[]
+  sources: SourceSnippet[],
+  memoryContext?: string
 ): ChatMessage[] {
   const sourcesBlock = sources
     .map((source) => {
@@ -212,6 +214,7 @@ function buildGroundedQuestionMessages(
       return `[${source.id}] ${location}\n${source.content}`;
     })
     .join('\n\n');
+  const memoryBlock = memoryContext ? `\n\nProject memory:\n${memoryContext}` : '';
 
   return [
     {
@@ -237,7 +240,7 @@ function buildGroundedQuestionMessages(
           },
           null,
           2
-        )}\n\n` +
+        )}${memoryBlock}\n\n` +
         'Sources:\n' +
         sourcesBlock
     }

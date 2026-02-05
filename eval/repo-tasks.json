@@ -1,0 +1,154 @@
+[
+  {
+    "id": "qa-01-runForge",
+    "kind": "qa",
+    "instruction": "From the context, what is the function name that runs the Forge pipeline for a single instruction? Reply with the function name only.",
+    "contextFiles": ["src/extension/runtime.ts"],
+    "expect": { "contains": ["runForge"] }
+  },
+  {
+    "id": "qa-02-default-endpoint",
+    "kind": "qa",
+    "instruction": "What is the value of DEFAULT_LLM_ENDPOINT? Reply with the exact string.",
+    "contextFiles": ["src/llm/config.ts"],
+    "expect": { "contains": ["http://127.0.0.1:8000/v1"] }
+  },
+  {
+    "id": "qa-03-default-model",
+    "kind": "qa",
+    "instruction": "What is the value of DEFAULT_LLM_MODEL? Reply with the exact string.",
+    "contextFiles": ["src/llm/config.ts"],
+    "expect": { "contains": ["Qwen/Qwen2.5-Coder-32B-Instruct-AWQ"] }
+  },
+  {
+    "id": "qa-04-routing-plan",
+    "kind": "qa",
+    "instruction": "Which environment variable overrides the plan model? Reply with the env var name.",
+    "contextFiles": ["src/llm/routing.ts"],
+    "expect": { "contains": ["FORGE_LLM_MODEL_PLAN"] }
+  },
+  {
+    "id": "qa-05-validation-fix",
+    "kind": "qa",
+    "instruction": "Which function runs validation first in fix mode? Reply with the function name.",
+    "contextFiles": ["src/forge/validationFlow.ts"],
+    "expect": { "contains": ["runValidationFirstFix"] }
+  },
+  {
+    "id": "qa-06-apply-updates",
+    "kind": "qa",
+    "instruction": "Which function writes updated file contents to disk? Reply with the function name.",
+    "contextFiles": ["src/forge/updates.ts"],
+    "expect": { "contains": ["applyFileUpdates"] }
+  },
+  {
+    "id": "qa-07-trace-max-entries",
+    "kind": "qa",
+    "instruction": "What is the numeric value of MAX_ENTRIES? Reply with the number only.",
+    "contextFiles": ["src/forge/trace.ts"],
+    "expect": { "contains": ["200"] }
+  },
+  {
+    "id": "qa-08-token-ratio",
+    "kind": "qa",
+    "instruction": "What constant defines the default token ratio? Reply with the identifier only.",
+    "contextFiles": ["src/llm/tokenBudget.ts"],
+    "expect": { "contains": ["DEFAULT_TOKEN_RATIO"] }
+  },
+  {
+    "id": "qa-09-history-merge",
+    "kind": "qa",
+    "instruction": "What function merges chat history into a new message list? Reply with the function name.",
+    "contextFiles": ["src/forge/intent.ts"],
+    "expect": { "contains": ["mergeChatHistory"] }
+  },
+  {
+    "id": "qa-10-context-bundle",
+    "kind": "qa",
+    "instruction": "What function builds the context bundle for edits? Reply with the function name.",
+    "contextFiles": ["src/forge/contextBundle.ts"],
+    "expect": { "contains": ["buildContextBundle"] }
+  },
+  {
+    "id": "edit-01-token-ratio",
+    "kind": "edit",
+    "instruction": "Update DEFAULT_TOKEN_RATIO from 4 to 5. Return the full updated file content only.",
+    "contextFiles": ["src/llm/tokenBudget.ts"],
+    "expect": {
+      "contains": ["const DEFAULT_TOKEN_RATIO = 5"],
+      "notContains": ["const DEFAULT_TOKEN_RATIO = 4"]
+    }
+  },
+  {
+    "id": "edit-02-default-timeout",
+    "kind": "edit",
+    "instruction": "Change DEFAULT_TIMEOUT_MS to 45000. Return the full updated file content only.",
+    "contextFiles": ["src/llm/config.ts"],
+    "expect": { "contains": ["const DEFAULT_TIMEOUT_MS = 45000"] }
+  },
+  {
+    "id": "edit-03-trace-max-chars",
+    "kind": "edit",
+    "instruction": "Set MAX_CONTENT_CHARS to 10000. Return the full updated file content only.",
+    "contextFiles": ["src/forge/trace.ts"],
+    "expect": { "contains": ["const MAX_CONTENT_CHARS = 10000"] }
+  },
+  {
+    "id": "edit-04-context-bundle-default",
+    "kind": "edit",
+    "instruction": "Change the default maxCharsPerFile parameter from 2000 to 1500 in buildContextBundle. Return the full updated file content only.",
+    "contextFiles": ["src/forge/contextBundle.ts"],
+    "expect": { "contains": ["maxCharsPerFile: number = 1500"] }
+  },
+  {
+    "id": "edit-05-updates-max-files",
+    "kind": "edit",
+    "instruction": "Set DEFAULT_MAX_FILES_PER_UPDATE to 8. Return the full updated file content only.",
+    "contextFiles": ["src/forge/updates.ts"],
+    "expect": { "contains": ["const DEFAULT_MAX_FILES_PER_UPDATE = 8"] }
+  },
+  {
+    "id": "edit-06-updates-max-chars",
+    "kind": "edit",
+    "instruction": "Set DEFAULT_MAX_UPDATE_CHARS to 70000. Return the full updated file content only.",
+    "contextFiles": ["src/forge/updates.ts"],
+    "expect": { "contains": ["const DEFAULT_MAX_UPDATE_CHARS = 70000"] }
+  },
+  {
+    "id": "edit-07-updates-json-retries",
+    "kind": "edit",
+    "instruction": "Set MAX_JSON_RETRIES to 4. Return the full updated file content only.",
+    "contextFiles": ["src/forge/updates.ts"],
+    "expect": { "contains": ["const MAX_JSON_RETRIES = 4"] }
+  },
+  {
+    "id": "edit-08-auto-retry",
+    "kind": "edit",
+    "instruction": "In PROFILE_DEFAULTS.auto, change autoFixMaxRetries from 3 to 4. Return the full updated file content only.",
+    "contextFiles": ["src/forge/settings.ts"],
+    "expect": { "contains": ["autoFixMaxRetries: 4"] }
+  },
+  {
+    "id": "edit-09-validation-priority",
+    "kind": "edit",
+    "instruction": "Change the validation priority order to test, lint, typecheck, build. Return the full updated file content only.",
+    "contextFiles": ["src/forge/validationFlow.ts"],
+    "expect": { "contains": ["const priority = ['test', 'lint', 'typecheck', 'build']"] }
+  },
+  {
+    "id": "edit-10-qa-max-bytes",
+    "kind": "edit",
+    "instruction": "Change the fallback qaMaxFileBytes default from 200000 to 250000. Return the full updated file content only.",
+    "contextFiles": ["src/forge/qaRetrieval.ts"],
+    "expect": {
+      "contains": ["?? 250000"],
+      "notContains": ["?? 200000"]
+    }
+  },
+  {
+    "id": "command-01-compile",
+    "kind": "command",
+    "command": "npm run compile",
+    "expectExitCode": 0
+  }
+]

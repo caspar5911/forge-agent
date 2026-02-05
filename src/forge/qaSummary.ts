@@ -109,7 +109,13 @@ export function buildProjectSummaryChunks(
 }
 
 /** Build the prompt for a single project summary chunk. */
-export function buildProjectChunkMessages(payload: string, index: number, total: number): ChatMessage[] {
+export function buildProjectChunkMessages(
+  payload: string,
+  index: number,
+  total: number,
+  memoryContext?: string
+): ChatMessage[] {
+  const memoryBlock = memoryContext ? `\n\nProject memory:\n${memoryContext}` : '';
   return [
     {
       role: 'system',
@@ -119,14 +125,19 @@ export function buildProjectChunkMessages(payload: string, index: number, total:
     },
     {
       role: 'user',
-      content: `Chunk ${index} of ${total}:\n\n${payload}`
+      content: `Chunk ${index} of ${total}:\n\n${payload}${memoryBlock}`
     }
   ];
 }
 
 /** Build the prompt that combines chunk summaries into a final answer. */
-export function buildProjectSummaryFromChunksMessages(instruction: string, chunks: string[]): ChatMessage[] {
+export function buildProjectSummaryFromChunksMessages(
+  instruction: string,
+  chunks: string[],
+  memoryContext?: string
+): ChatMessage[] {
   const joined = chunks.map((chunk, index) => `Chunk ${index + 1} summary:\n${chunk}`).join('\n\n');
+  const memoryBlock = memoryContext ? `\n\nProject memory:\n${memoryContext}` : '';
   return [
     {
       role: 'system',
@@ -136,7 +147,7 @@ export function buildProjectSummaryFromChunksMessages(instruction: string, chunk
     },
     {
       role: 'user',
-      content: `Question: ${instruction}\n\nChunk summaries:\n${joined}`
+      content: `Question: ${instruction}\n\nChunk summaries:\n${joined}${memoryBlock}`
     }
   ];
 }

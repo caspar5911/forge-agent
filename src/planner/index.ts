@@ -43,9 +43,10 @@ export type PlannerInput = {
 /** Pick the next single safe tool call based on the plan step using the local LLM. */
 export async function nextToolCall(
   input: PlannerInput,
-  config: LLMConfig = {}
+  config: LLMConfig = {},
+  memoryContext?: string
 ): Promise<ToolCall> {
-  const messages = buildMessages(input);
+  const messages = buildMessages(input, memoryContext);
   recordPrompt('Planner prompt', messages, true);
 
   try {
@@ -199,7 +200,7 @@ function pickValidationCommand(stepLower: string, context: ProjectContext): stri
 }
 
 /** Build the LLM prompt for selecting the next tool call. */
-function buildMessages(input: PlannerInput): ChatMessage[] {
+function buildMessages(input: PlannerInput, memoryContext?: string): ChatMessage[] {
   const { plan, context } = input;
   const previousResults = input.previousResults ?? [];
   const stepIndex =
@@ -207,6 +208,8 @@ function buildMessages(input: PlannerInput): ChatMessage[] {
       ? Math.min(previousResults.length, plan.steps.length - 1)
       : 0;
   const step = plan.kind === 'plan' && plan.steps.length > 0 ? plan.steps[stepIndex] : null;
+
+  const memoryBlock = memoryContext ? `\n\nProject memory:\n${memoryContext}` : '';
 
   return [
     {
@@ -223,7 +226,8 @@ function buildMessages(input: PlannerInput): ChatMessage[] {
         `ProjectContext:\n${JSON.stringify(context, null, 2)}\n\n` +
         `PreviousResults:\n${JSON.stringify(previousResults, null, 2)}\n\n` +
         `CurrentStepIndex: ${stepIndex}\n` +
-        `CurrentStep: ${step ?? 'N/A'}\n`
+        `CurrentStep: ${step ?? 'N/A'}\n` +
+        memoryBlock
     }
   ];
 }

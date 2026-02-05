@@ -18,11 +18,17 @@ export type ValidationResult = {
   output: string;
   command: string | null;
   label: string | null;
+  failures?: Array<{ label: string; command: string; output: string }>;
 };
 
 /** Optionally run a validation command based on settings and package scripts. */
-export async function maybeRunValidation(rootPath: string, output: vscode.OutputChannel): Promise<ValidationResult> {
+export async function maybeRunValidation(
+  rootPath: string,
+  output: vscode.OutputChannel,
+  instruction?: string
+): Promise<ValidationResult> {
   const autoValidation = getForgeSetting<boolean>('autoValidation') !== false;
+  const autoMode = getForgeSetting<string>('autoValidationMode') ?? 'smart';
   const contextObject = harvestContext();
   const options = buildValidationOptions(contextObject.packageJson, contextObject.packageManager);
 
@@ -32,7 +38,13 @@ export async function maybeRunValidation(rootPath: string, output: vscode.Output
 
   let selected: ValidationOption | null = null;
   if (autoValidation) {
-    return runAllValidationOptions(rootPath, output, options);
+    if (autoMode === 'all') {
+      recordStep('Validation selection', 'auto: all');
+      return runAllValidationOptions(rootPath, output, options);
+    }
+    const selection = selectValidationOptions(options, instruction ?? '');
+    recordStep('Validation selection', selection.reason);
+    return runAllValidationOptions(rootPath, output, selection.options);
   } else {
     const items = options.map((option) => ({
       label: option.label,
@@ -84,6 +96,7 @@ async function runAllValidationOptions(
   const ordered = orderValidationOptions(options);
   let combinedOutput = '';
   let ok = true;
+  const failures: Array<{ label: string; command: string; output: string }> = [];
 
   for (const option of ordered) {
     output.appendLine(`Running validation: ${option.label}`);
@@ -95,12 +108,14 @@ async function runAllValidationOptions(
       combinedOutput += result.output;
       if (result.code !== 0) {
         ok = false;
+        failures.push({ label: option.label, command: option.command, output: result.output });
       }
     } catch (error) {
       output.appendLine(`Validation error: ${String(error)}`);
       recordStep('Validation error', `${option.label}: ${String(error)}`);
       combinedOutput += String(error);
       ok = false;
+      failures.push({ label: option.label, command: option.command, output: String(error) });
     }
   }
 
@@ -108,7 +123,8 @@ async function runAllValidationOptions(
     ok,
     output: combinedOutput,
     command: ordered.map((item) => item.command).join(' && '),
-    label: ordered.map((item) => item.label).join(', ')
+    label: ordered.map((item) => item.label).join(', '),
+    failures
   };
 }
 
@@ -124,7 +140,7 @@ export async function runValidationFirstFix(
 ): Promise<boolean> {
   logOutput(output, panelApi, 'Running validation (fix mode)...');
   recordStep('Validation mode', 'fix');
-  let validationResult = await maybeRunValidation(rootPath, output);
+  let validationResult = await maybeRunValidation(rootPath, output, instruction);
   if (validationResult.ok) {
     logOutput(output, panelApi, 'Validation already passing.');
     return options?.continueOnPass ? false : true;
@@ -148,6 +164,7 @@ export async function runValidationFirstFix(
       const attempt = maxFixRetries - remainingFixRetries + 1;
       logOutput(output, panelApi, `Auto-fix attempt ${attempt} of ${maxFixRetries}...`);
       recordStep('Auto-fix attempt', `${attempt} of ${maxFixRetries}`);
+      const failureContext = buildValidationFailureContext(validationResult);
       const fixedUpdates = await attemptAutoFix(
         rootPath,
         instruction,
@@ -155,7 +172,8 @@ export async function runValidationFirstFix(
         output,
         panelApi,
         history,
-        signal
+        signal,
+        failureContext ?? undefined
       );
       if (!fixedUpdates) {
         break;
@@ -163,7 +181,7 @@ export async function runValidationFirstFix(
       lastUpdates = fixedUpdates;
       remainingFixRetries -= 1;
       logOutput(output, panelApi, 'Re-running validation...');
-      validationResult = await maybeRunValidation(rootPath, output);
+      validationResult = await maybeRunValidation(rootPath, output, instruction);
       continue;
     }
 
@@ -188,6 +206,8 @@ export async function runValidationFirstFix(
     const attempt = maxFixRetries - remainingFixRetries + 1;
     logOutput(output, panelApi, `Auto-fix (verification) ${attempt} of ${maxFixRetries}...`);
     const extraContext = verification.issues.join('\n');
+    const failureContext = buildValidationFailureContext(validationResult);
+    const combinedContext = [extraContext, failureContext].filter(Boolean).join('\n\n') || undefined;
     const fixedUpdates = await attemptAutoFix(
       rootPath,
       instruction,
@@ -196,7 +216,7 @@ export async function runValidationFirstFix(
       panelApi,
       history,
       signal,
-      extraContext
+      combinedContext
     );
     if (!fixedUpdates) {
       break;
@@ -204,7 +224,7 @@ export async function runValidationFirstFix(
     lastUpdates = fixedUpdates;
     remainingFixRetries -= 1;
     logOutput(output, panelApi, 'Re-running validation...');
-    validationResult = await maybeRunValidation(rootPath, output);
+    validationResult = await maybeRunValidation(rootPath, output, instruction);
   }
 
   if (!validationResult.ok) {
@@ -252,6 +272,75 @@ function buildFixDetails(updates: FileUpdate[] | null): string {
     }
   });
   return details.join('\n\n');
+}
+
+/** Choose validation commands based on instruction hints. */
+function selectValidationOptions(
+  options: ValidationOption[],
+  instruction: string
+): { options: ValidationOption[]; reason: string } {
+  const lowered = instruction.toLowerCase();
+  const wantsAll = /(validate|ci|pipeline|all checks|all tests)/.test(lowered);
+  const wantsTest = /(test|tests|unit|integration|e2e|spec)/.test(lowered);
+  const wantsLint = /(lint|eslint|prettier|format)/.test(lowered);
+  const wantsTypecheck = /(typecheck|type check|typescript|tsc)/.test(lowered);
+  const wantsBuild = /(build|compile|bundle)/.test(lowered);
+
+  if (wantsAll) {
+    return { options, reason: 'auto: instruction requested full validation' };
+  }
+
+  const requested: ValidationOption[] = [];
+  if (wantsTest) {
+    const found = options.find((option) => option.label === 'test');
+    if (found) {
+      requested.push(found);
+    }
+  }
+  if (wantsLint) {
+    const found = options.find((option) => option.label === 'lint');
+    if (found) {
+      requested.push(found);
+    }
+  }
+  if (wantsTypecheck) {
+    const found = options.find((option) => option.label === 'typecheck');
+    if (found) {
+      requested.push(found);
+    }
+  }
+  if (wantsBuild) {
+    const found = options.find((option) => option.label === 'build');
+    if (found) {
+      requested.push(found);
+    }
+  }
+
+  if (requested.length > 0) {
+    return { options: requested, reason: `auto: instruction hints -> ${requested.map((item) => item.label).join(', ')}` };
+  }
+
+  const best = pickBestValidationOption(options);
+  return {
+    options: best ? [best] : options,
+    reason: best ? `auto: default -> ${best.label}` : 'auto: default -> all'
+  };
+}
+
+/** Summarize validation failures for auto-fix prompts. */
+export function buildValidationFailureContext(result: ValidationResult): string | null {
+  if (!result.failures || result.failures.length === 0) {
+    return null;
+  }
+  const blocks = result.failures.map((failure) => {
+    const output = failure.output?.trim();
+    return [
+      `Command: ${failure.command}`,
+      `Label: ${failure.label}`,
+      output ? `Output:\n${output}` : null
+    ].filter(Boolean).join('\n');
+  });
+  return `Validation failures:\n${blocks.join('\n\n')}`;
 }
 
 /** Choose the highest-priority validation option. */

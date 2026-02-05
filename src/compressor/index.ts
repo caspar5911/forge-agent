@@ -17,7 +17,8 @@ export type TaskPlan =
 export async function compressTask(
   instruction: string,
   context: ProjectContext,
-  config: LLMConfig = {}
+  config: LLMConfig = {},
+  memoryContext?: string
 ): Promise<TaskPlan> {
   const trimmed = instruction.trim();
   if (!trimmed) {
@@ -31,7 +32,7 @@ export async function compressTask(
     };
   }
 
-  const messages = buildMessages(trimmed, context);
+  const messages = buildMessages(trimmed, context, memoryContext);
   recordPrompt('Task compression prompt', messages, true);
 
   try {
@@ -101,8 +102,9 @@ export function compressTaskLocal(instruction: string): TaskPlan {
 }
 
 /** Build the LLM prompt for task compression. */
-function buildMessages(instruction: string, context: ProjectContext): ChatMessage[] {
+function buildMessages(instruction: string, context: ProjectContext, memoryContext?: string): ChatMessage[] {
   const contextJson = JSON.stringify(context, null, 2);
+  const memoryBlock = memoryContext ? `\n\nProject memory:\n${memoryContext}` : '';
 
   return [
     {
@@ -114,7 +116,7 @@ function buildMessages(instruction: string, context: ProjectContext): ChatMessag
     },
     {
       role: 'user',
-      content: `Instruction:\n${instruction}\n\nProjectContext:\n${contextJson}`
+      content: `Instruction:\n${instruction}\n\nProjectContext:\n${contextJson}${memoryBlock}`
     }
   ];
 }

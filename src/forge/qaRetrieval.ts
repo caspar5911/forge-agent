@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { extractKeywords, extractMentionedFiles } from './fileSearch';
 import { rankFilesByRelevance } from './retrievalRanker';
+import { searchEmbeddings } from './embeddingsIndex';
 
 export type SourceSnippet = {
   id: string;
@@ -33,6 +34,20 @@ export async function collectRelevantSnippets(
   const maxBytes = Math.max(1024, config.get<number>('qaMaxFileBytes') ?? 200000);
   const keywords = extractKeywords(instruction);
   const mentioned = extractMentionedFiles(instruction, filesList);
+
+  // Use embeddings when enabled to surface the most relevant snippets first.
+  const embeddingHits = await searchEmbeddings(instruction, rootPath, filesList, config, signal);
+  if (embeddingHits && embeddingHits.length > 0) {
+    const sources = embeddingHits.slice(0, maxSnippets).map((hit, index) => ({
+      id: `S${index + 1}`,
+      path: hit.path,
+      startLine: hit.startLine,
+      endLine: hit.endLine,
+      content: hit.content
+    }));
+    const coverage = sources.length > 0 ? Math.min(1, sources.length / maxSnippets) : 0;
+    return { sources, keywords, keywordCoverage: coverage };
+  }
 
   if (keywords.length === 0 && mentioned.length === 0) {
     return { sources: [], keywords, keywordCoverage: 0 };

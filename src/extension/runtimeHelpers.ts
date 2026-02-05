@@ -88,7 +88,8 @@ export async function runToolAwarePreflight(
   activeFilePath: string | null,
   output: vscode.OutputChannel,
   panelApi: ForgeUiApi | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  memoryContext?: string
 ): Promise<string | null> {
   const projectContext = harvestContext();
   const plannerContext = {
@@ -101,9 +102,9 @@ export async function runToolAwarePreflight(
     backendFramework: projectContext.backendFramework
   };
 
-  const plan = await compressTask(instruction, plannerContext, getRoutedConfig('plan'));
+  const plan = await compressTask(instruction, plannerContext, getRoutedConfig('plan'), memoryContext);
   recordStep('Tool-aware plan', plan.kind === 'plan' ? plan.steps.join('\n') : plan.questions.join('\n'));
-  const toolCall = await nextToolCall({ plan, context: plannerContext }, getRoutedConfig('plan'));
+  const toolCall = await nextToolCall({ plan, context: plannerContext }, getRoutedConfig('plan'), memoryContext);
   recordStep('Tool-aware tool', JSON.stringify(toolCall));
 
   if (signal?.aborted) {

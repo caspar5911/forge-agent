@@ -12,6 +12,7 @@ const PROFILE_DEFAULTS: Record<ForgeProfile, ProfileDefaults> = {
     skipTargetConfirmation: true,
     showDiffPreview: false,
     autoValidation: true,
+    autoValidationMode: 'smart',
     autoFixValidation: true,
     autoFixMaxRetries: 3,
     bestEffortFix: true,

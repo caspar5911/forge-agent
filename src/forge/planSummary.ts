@@ -22,7 +22,8 @@ export async function generatePlanSummary(
   output: vscode.OutputChannel,
   panelApi: ForgeUiApi | undefined,
   signal?: AbortSignal,
-  history?: ChatHistoryItem[]
+  history?: ChatHistoryItem[],
+  memoryContext?: string
 ): Promise<string[] | null> {
   const context = harvestContext();
   const filesList = context.files && context.files.length > 0
@@ -31,6 +32,7 @@ export async function generatePlanSummary(
   const preview = filesList.slice(0, 80).join('\n');
   const truncated = filesList.length > 80 ? '\n...(truncated)' : '';
 
+  const memoryBlock = memoryContext ? `\n\nProject memory:\n${memoryContext}` : '';
   const messages: ChatMessage[] = [
     {
       role: 'system',
@@ -53,7 +55,7 @@ export async function generatePlanSummary(
           },
           null,
           2
-        )}\n\n` +
+        )}${memoryBlock}\n\n` +
         'Files (partial list):\n' +
         preview +
         truncated
